@@ -9,7 +9,14 @@ from typing import Any, Callable
 
 from .fetch import DEFAULT_SYMBOL, fetch_chain
 from .settings import default_interval, public_url, tasty_configured
-from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report, with_deltas, yahoo_session_status
+from .signal import (
+    DEFAULT_BAND,
+    DEFAULT_HEADLINE_DTE,
+    build_report,
+    chain_table,
+    with_deltas,
+    yahoo_session_status,
+)
 from .store import RAW_HISTORY_LIMIT, BAR_HISTORY_LIMIT, aggregate_bars, compact_point, load_history, save_snapshot
 from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
 
@@ -51,6 +58,7 @@ class LiveHub:
         self.fetch_fn = fetch_fn or fetch_chain
         self.tasty_feed = tasty_feed
         self.latest: dict | None = None
+        self.latest_chain = None
         self.error: str | None = None
         self.last_tick_at: datetime | None = None
         self.subscribers: set[asyncio.Queue] = set()
@@ -121,6 +129,20 @@ class LiveHub:
             "status": self.status(),
         }
 
+    def chain_payload(self) -> dict:
+        """Raw 0DTE call/put quotes for the chain tab. Uses the live cache when streaming."""
+        chain = self.latest_chain
+        feed = self.tasty_feed
+        if feed is not None and feed.contracts:
+            try:
+                chain = feed.snapshot()
+            except Exception:  # noqa: BLE001
+                pass
+        if chain is None:
+            return {"symbol": self.symbol, "rows": [], "expiry": None, "spot": None, "asof": None,
+                    "error": self.error or "아직 체인을 받지 못했습니다."}
+        return chain_table(chain, max_dte=self.max_dte)
+
     def collect_once(self) -> dict:
         history = load_history(self.symbol.lstrip("/"), limit=240)
         chain = self._load_chain()
@@ -130,6 +152,7 @@ class LiveHub:
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
         self.latest = payload
+        self.latest_chain = chain
         self.error = None
         self.last_tick_at = datetime.now(timezone.utc)
         return payload

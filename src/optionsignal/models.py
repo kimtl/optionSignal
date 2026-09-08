@@ -20,6 +20,7 @@ class OptionQuote:
     open_interest: int
     iv: float | None
     percent_change: float | None
+    delta: float | None = None
 
 
 @dataclass

@@ -5,17 +5,21 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .metrics import (
+    atm_strike,
     bias_from_metrics,
+    call_delta,
     call_put_premium_imbalance,
     nearest_quote,
     premium_ratio,
     risk_reversal_iv,
+    sane_iv,
     select_near_otm,
     strike_range,
     total_volume,
     volume_premium,
     volume_weighted_iv,
     volume_weighted_pct_change,
+    year_fraction,
 )
 from .models import ExpirySlice, OptionChain, OptionQuote, SignalReport
 
@@ -163,6 +167,66 @@ def build_report(
         headline_call_strikes=strike_range(headline_calls),
         headline_put_strikes=strike_range(headline_puts),
     )
+
+
+def _side(quote: OptionQuote, spot: float, t: float) -> dict:
+    delta = quote.delta
+    if delta is None:
+        sigma = sane_iv(quote.iv)
+        if sigma is not None:
+            call = call_delta(spot, quote.strike, t, sigma)
+            if call is not None:
+                delta = call if quote.right == "call" else call - 1.0
+    return {
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "mid": quote.mid,
+        "last": quote.last,
+        "volume": int(quote.volume or 0),
+        "open_interest": int(quote.open_interest or 0),
+        "iv": sane_iv(quote.iv),
+        "delta": None if delta is None else round(float(delta), 4),
+        "delta_source": "feed" if quote.delta is not None else ("model" if delta is not None else None),
+    }
+
+
+def chain_table(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE) -> dict:
+    """Raw call/put quotes per strike for the nearest expiry within max_dte (0DTE by default)."""
+    now = chain.asof if chain.asof.tzinfo else chain.asof.replace(tzinfo=NY)
+    grouped = _group_by_expiry(chain.quotes)
+    expiry = None
+    for candidate in grouped:
+        dte = _dte(candidate, now)
+        if 0 <= dte <= max_dte:
+            expiry = candidate
+            break
+    if expiry is None:
+        living = [e for e in grouped if _dte(e, now) >= 0]
+        expiry = living[0] if living else None
+    base = {
+        "symbol": chain.symbol,
+        "spot": chain.spot,
+        "futures_price": chain.futures_price,
+        "asof": now.astimezone(NY).isoformat(timespec="seconds"),
+        "source": chain.source,
+        "multiplier": chain.multiplier,
+        "expiry": None,
+        "dte": None,
+        "atm": None,
+        "rows": [],
+    }
+    if expiry is None:
+        return base
+    quotes = grouped[expiry]
+    t = year_fraction(expiry, now=now)
+    by_strike: dict[float, dict] = {}
+    for quote in quotes:
+        row = by_strike.setdefault(quote.strike, {"strike": quote.strike, "call": None, "put": None})
+        row[quote.right] = _side(quote, chain.spot, t)
+    rows = [by_strike[k] for k in sorted(by_strike)]
+    atm = atm_strike(quotes, chain.spot)
+    base.update({"expiry": expiry.isoformat(), "dte": _dte(expiry, now), "atm": atm, "rows": rows})
+    return base
 
 
 def _parse_ts(value: str | None) -> datetime | None:

@@ -107,6 +107,63 @@
     details summary { cursor: pointer; color: var(--text); margin-bottom: 8px; }
     .flash { animation: pulse 0.8s ease; }
     @keyframes pulse { from { filter: brightness(1.4); } to { filter: brightness(1); } }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 10px 22px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .tabs button {
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: 10px 10px 0 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 16px;
+      font-size: 14px;
+    }
+    .tabs button.active {
+      background: var(--panel);
+      border-color: var(--line);
+      color: var(--text);
+    }
+    .panel { display: none; }
+    .panel.active { display: grid; }
+    .chain-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .chain-spot { font-size: 26px; font-variant-numeric: tabular-nums; color: var(--warn); }
+    .chain-wrap { max-height: calc(100vh - 260px); overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table.chain { font-size: 12.5px; }
+    table.chain thead th {
+      position: sticky;
+      top: 0;
+      background: #0b1117;
+      z-index: 1;
+      text-align: right;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    table.chain thead th.group { text-align: center; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    table.chain thead th.group.call { color: var(--call); }
+    table.chain thead th.group.put { color: var(--put); }
+    table.chain td { text-align: right; padding: 5px 7px; white-space: nowrap; }
+    table.chain th:first-child, table.chain td:first-child { text-align: right; }
+    table.chain td.strike { text-align: center; font-weight: 600; color: var(--text); background: #0d141b; }
+    table.chain th.strike { text-align: center; }
+    table.chain tr.atm td.strike { color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+    table.chain tr.atm td { background: #141d27; }
+    table.chain td.itm { background: rgba(124, 184, 255, 0.06); }
+    table.chain td.dim { color: var(--muted); }
+    table.chain td.vol-hot { color: var(--warn); font-weight: 600; }
+    table.chain td.bid { color: var(--call); }
+    table.chain td.ask { color: var(--put); }
+    .chain-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     @media (max-width: 980px) {
       .hero, .wide { grid-template-columns: 1fr; }
       .big { font-size: 40px; }
@@ -146,7 +203,51 @@
       <button id="copy">링크 복사</button>
     </div>
   </header>
-  <main>
+  <nav class="tabs">
+    <button type="button" id="tabBoard" class="active" data-panel="boardPanel">보드</button>
+    <button type="button" id="tabChain" data-panel="chainPanel">옵션 체인 · 0DTE</button>
+  </nav>
+  <main id="chainPanel" class="panel">
+    <section class="card">
+      <div class="chain-head">
+        <div>
+          <div class="label">NQ 0DTE 옵션 체인</div>
+          <div><span class="chain-spot" id="chainSpot">—</span> <span class="meta" id="chainMeta">체인을 기다리는 중</span></div>
+        </div>
+        <div class="chain-controls">
+          <label class="sub">행사가 범위
+            <select id="chainRange">
+              <option value="200">±200포</option>
+              <option value="400" selected>±400포</option>
+              <option value="800">±800포</option>
+              <option value="0">전체</option>
+            </select>
+          </label>
+          <button type="button" id="chainAtm">등가격으로</button>
+          <span class="meta" id="chainCount"></span>
+        </div>
+      </div>
+      <div class="chain-wrap" id="chainWrap">
+        <table class="chain">
+          <thead>
+            <tr>
+              <th class="group call" colspan="7">콜</th>
+              <th class="strike">행사가</th>
+              <th class="group put" colspan="7">풋</th>
+            </tr>
+            <tr>
+              <th>델타</th><th>OI</th><th>거래량</th><th>IV</th><th>매수</th><th>매도</th><th>체결</th>
+              <th class="strike"></th>
+              <th>체결</th><th>매수</th><th>매도</th><th>IV</th><th>거래량</th><th>OI</th><th>델타</th>
+            </tr>
+          </thead>
+          <tbody id="chainRows"><tr><td colspan="15" style="text-align:center">체인을 기다리는 중…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="meta" id="chainHint">매수/매도는 호가, 체결은 마지막 체결가(없으면 중간가). 델타는 tastytrade 그릭스 값이고, 없으면 IV로 계산한 모델값(∗). 노란 거래량은 해당 만기에서 상위 10%.</p>
+    </section>
+  </main>
+  <main id="boardPanel" class="panel active">
     <section class="hero">
       <article class="card" id="cppiCard">
         <div class="label">CPPI · 콜-풋 프리미엄</div>
@@ -622,10 +723,11 @@
       if (payload.points) {
         points = payload.points;
         paintTape(points);
-        drawChart(points);
+        if (activePanel === "boardPanel") drawChart(points);
         $("chartHint").textContent = chartHint();
       }
       paintStatus(payload.status);
+      if (activePanel === "chainPanel" && (payload.event === "tick" || payload.tick)) fetchChain();
     }
 
     async function fetchLive() {
@@ -723,6 +825,113 @@
       setHours(Math.round(next * 2) / 2);
     }, {passive: false});
     window.addEventListener("resize", () => drawChart(points));
+
+    let activePanel = "boardPanel";
+    let chainData = null;
+    let chainScrolled = false;
+    let chainBusy = false;
+
+    function setPanel(id) {
+      activePanel = id;
+      document.querySelectorAll(".tabs button").forEach(btn => btn.classList.toggle("active", btn.dataset.panel === id));
+      document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === id));
+      if (id === "chainPanel") {
+        chainScrolled = false;
+        fetchChain();
+      } else {
+        drawChart(points);
+      }
+      try { history.replaceState(null, "", id === "chainPanel" ? "#chain" : "#board"); } catch {}
+    }
+    document.querySelectorAll(".tabs button").forEach(btn => { btn.onclick = () => setPanel(btn.dataset.panel); });
+
+    async function fetchChain() {
+      if (chainBusy) return;
+      chainBusy = true;
+      try {
+        const res = await fetch("/api/chain");
+        chainData = await res.json();
+        paintChain(chainData);
+      } catch (e) {
+        $("chainMeta").innerHTML = `<span class="error">체인 조회 실패</span>`;
+      } finally {
+        chainBusy = false;
+      }
+    }
+
+    const px = (n) => n == null ? "—" : Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const dl = (side) => {
+      if (!side || side.delta == null) return "—";
+      const s = Math.abs(side.delta).toFixed(2);
+      return side.delta_source === "model" ? `${s}∗` : s;
+    };
+
+    function paintChain(data) {
+      if (!data) return;
+      const spot = data.spot;
+      $("chainSpot").textContent = spot == null ? "—" : `${data.symbol || "NQ"} ${fmt(spot, 2)}`;
+      if (data.error && !(data.rows || []).length) {
+        $("chainMeta").innerHTML = `<span class="error">${data.error}</span>`;
+        $("chainRows").innerHTML = `<tr><td colspan="15" style="text-align:center">${data.error}</td></tr>`;
+        return;
+      }
+      const when = data.asof ? clock(data.asof) : "—";
+      $("chainMeta").textContent = `${data.symbol || ""} · 만기 ${data.expiry || "—"} (DTE ${data.dte ?? "—"}) · ${data.source || ""} · ${when}`;
+      const range = Number($("chainRange").value) || 0;
+      let rows = data.rows || [];
+      if (range > 0 && spot != null) rows = rows.filter(r => Math.abs(r.strike - spot) <= range);
+      const vols = rows.flatMap(r => [r.call?.volume || 0, r.put?.volume || 0]).filter(v => v > 0).sort((a, b) => b - a);
+      const hot = vols.length ? vols[Math.max(0, Math.floor(vols.length * 0.1) - 1)] : Infinity;
+      const atm = data.atm;
+      const volCls = (v) => v > 0 && v >= hot ? "vol-hot" : (v > 0 ? "" : "dim");
+      const side = (s, right) => {
+        if (!s) return `<td class="dim" colspan="7">—</td>`;
+        const itm = spot != null && (right === "call" ? s && rowStrike < spot : rowStrike > spot);
+        const cls = itm ? " itm" : "";
+        const last = s.last != null ? px(s.last) : (s.mid != null ? `<span class="dim">${px(s.mid)}</span>` : "—");
+        const cells = right === "call"
+          ? [
+              `<td class="${cls}">${dl(s)}</td>`,
+              `<td class="${cls} ${s.open_interest ? "" : "dim"}">${fmt(s.open_interest, 0)}</td>`,
+              `<td class="${cls} ${volCls(s.volume)}">${fmt(s.volume, 0)}</td>`,
+              `<td class="${cls} dim">${pct(s.iv, 0)}</td>`,
+              `<td class="${cls} bid">${px(s.bid)}</td>`,
+              `<td class="${cls} ask">${px(s.ask)}</td>`,
+              `<td class="${cls}">${last}</td>`,
+            ]
+          : [
+              `<td class="${cls}">${last}</td>`,
+              `<td class="${cls} bid">${px(s.bid)}</td>`,
+              `<td class="${cls} ask">${px(s.ask)}</td>`,
+              `<td class="${cls} dim">${pct(s.iv, 0)}</td>`,
+              `<td class="${cls} ${volCls(s.volume)}">${fmt(s.volume, 0)}</td>`,
+              `<td class="${cls} ${s.open_interest ? "" : "dim"}">${fmt(s.open_interest, 0)}</td>`,
+              `<td class="${cls}">${dl(s)}</td>`,
+            ];
+        return cells.join("");
+      };
+      let rowStrike = null;
+      $("chainRows").innerHTML = rows.map(r => {
+        rowStrike = r.strike;
+        const isAtm = atm != null && r.strike === atm;
+        return `<tr class="${isAtm ? "atm" : ""}" data-strike="${r.strike}">${side(r.call, "call")}<td class="strike">${fmt(r.strike, 0)}</td>${side(r.put, "put")}</tr>`;
+      }).join("") || `<tr><td colspan="15" style="text-align:center">이 범위에 행사가가 없습니다.</td></tr>`;
+      $("chainCount").textContent = `${rows.length}개 행사가 · 전체 ${(data.rows || []).length}`;
+      if (!chainScrolled) scrollChainToAtm();
+    }
+
+    function scrollChainToAtm() {
+      const row = document.querySelector("#chainRows tr.atm");
+      if (!row) return;
+      const wrap = $("chainWrap");
+      wrap.scrollTop = Math.max(0, row.offsetTop - wrap.clientHeight / 2);
+      chainScrolled = true;
+    }
+
+    $("chainRange").onchange = () => { chainScrolled = false; paintChain(chainData); };
+    $("chainAtm").onclick = () => { chainScrolled = false; scrollChainToAtm(); };
+
+    if (location.hash === "#chain") setPanel("chainPanel");
     fetchLive();
     connect();
   </script>

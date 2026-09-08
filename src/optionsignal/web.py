@@ -103,6 +103,10 @@ def create_app(
             )
         return hub.latest
 
+    @app.get("/api/chain")
+    def api_chain():
+        return _hub().chain_payload()
+
     @app.get("/api/minutes")
     def api_minutes(
         limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
