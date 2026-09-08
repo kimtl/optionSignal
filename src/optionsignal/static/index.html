@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>optionSignal — 콜 vs 풋</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121820;
+      --line: #1e2a36;
+      --text: #e7eef6;
+      --muted: #8aa0b5;
+      --call: #3dd68c;
+      --put: #ff5d73;
+      --accent: #7cb8ff;
+      --warn: #f5c15c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #152033, var(--bg));
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-end;
+      padding: 24px 28px 8px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: 0.04em; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input, button, select {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    button { cursor: pointer; background: #1b2b3d; }
+    button:hover { border-color: var(--accent); }
+    main { padding: 16px 28px 40px; display: grid; gap: 16px; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1fr;
+      gap: 16px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+    }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .big { font-size: 56px; font-variant-numeric: tabular-nums; margin: 8px 0; }
+    .call { color: var(--call); }
+    .put { color: var(--put); }
+    .neutral { color: var(--accent); }
+    .warn { color: var(--warn); }
+    .bars { display: grid; gap: 10px; margin-top: 14px; }
+    .bar-row { display: grid; grid-template-columns: 42px 1fr 90px; gap: 8px; align-items: center; font-size: 13px; }
+    .track { height: 10px; background: #0c1218; border-radius: 99px; overflow: hidden; }
+    .fill { height: 100%; border-radius: 99px; }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 13px; }
+    th:first-child, td:first-child { text-align: left; }
+    .summary { font-size: 16px; line-height: 1.5; }
+    .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    .error { color: var(--put); }
+    details { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    details summary { cursor: pointer; color: var(--text); margin-bottom: 8px; }
+    @media (max-width: 960px) {
+      .hero { grid-template-columns: 1fr; }
+      .big { font-size: 40px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>optionSignal</h1>
+      <div class="sub">나스닥(QQQ/NDX) 근월 옵션에서 콜 시세 vs 풋 시세를 한 숫자로 비교합니다.</div>
+    </div>
+    <div class="controls">
+      <select id="symbol">
+        <option value="QQQ">QQQ · 나스닥100 ETF</option>
+        <option value="^NDX">NDX · 나스닥100 지수</option>
+      </select>
+      <label class="sub">DTE ≤ <input id="maxDte" type="number" min="0" max="45" value="7" style="width:64px" /></label>
+      <button id="refresh">새로고침</button>
+      <button id="save">스냅샷 저장</button>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <article class="card">
+        <div class="label">CPPI · 콜-풋 프리미엄 불균형</div>
+        <div id="cppi" class="big neutral">—</div>
+        <div id="bias" class="sub">대기 중</div>
+        <div class="bars">
+          <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
+          <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
+        </div>
+      </article>
+      <article class="card">
+        <div class="label">리스크 리버설 · 25Δ 콜IV − 풋IV</div>
+        <div id="rr" class="big neutral">—</div>
+        <p class="sub">양수면 콜이 풋보다 비싸고, 음수면 풋이 더 비쌉니다. 지수는 원래 풋 스큐가 있어 음수가 흔합니다.</p>
+        <p class="meta" id="ivLine">OTM IV —</p>
+      </article>
+      <article class="card">
+        <div class="label">세션 급등 갭 · 콜% − 풋%</div>
+        <div id="surge" class="big neutral">—</div>
+        <p class="summary" id="summary">체인을 불러오는 중…</p>
+        <p class="meta" id="meta"></p>
+      </article>
+    </section>
+    <section class="card">
+      <div class="label">만기별 근월 체인</div>
+      <table>
+        <thead>
+          <tr>
+            <th>만기</th><th>DTE</th><th>CPPI</th><th>콜 프리미엄</th><th>풋 프리미엄</th><th>콜 IV</th><th>풋 IV</th><th>RR</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+    <section class="card">
+      <details open>
+        <summary>이 숫자가 의미하는 것</summary>
+        ATM 콜과 ATM 풋 가격을 그대로 빼면 거의 신호가 없습니다. 선물/지수 옵션은 풋콜 패리티 때문에 ATM에서 콜≈풋입니다.
+        상승이 임박하다고 느낄 때 실제로 뛰는 것은 <b>OTM 콜 수요와 IV</b>이고, 하락이 임박할 때는 <b>OTM 풋</b>입니다.
+        CPPI는 spot ±8% 안의 근월 옵션을 거래량×중간가로 합쳐 (콜−풋)/(콜+풋)으로 정규화합니다. +1은 콜만, −1은 풋만, 0은 균형입니다.
+        “급등”은 한 장의 스냅샷보다 세션 등락률 갭과 저장한 시계열이 더 잘 보여 줍니다.
+        실제 NQ 선물옵션 호가는 CME 유료 시세입니다. 이 도구는 같은 지수인 QQQ/NDX 옵션으로 그 흐름을 봅니다.
+      </details>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n, d=2) => n == null || Number.isNaN(n) ? "—" : Number(n).toLocaleString("en-US", {maximumFractionDigits: d});
+    const pct = (n, d=1) => n == null ? "—" : `${(n*100).toFixed(d)}%`;
+    const tone = (n) => n == null ? "neutral" : n > 0.02 ? "call" : n < -0.02 ? "put" : "neutral";
+
+    function paint(data) {
+      const cppi = data.headline_cppi;
+      $("cppi").textContent = cppi == null ? "—" : cppi.toFixed(3);
+      $("cppi").className = "big " + tone(cppi);
+      $("bias").textContent = `${data.bias} · score ${data.score > 0 ? "+" : ""}${data.score}`;
+      const c = data.headline_call_premium || 0, p = data.headline_put_premium || 0, tot = c+p || 1;
+      $("callBar").style.width = `${(c/tot)*100}%`;
+      $("putBar").style.width = `${(p/tot)*100}%`;
+      $("callPrem").textContent = fmt(c, 0);
+      $("putPrem").textContent = fmt(p, 0);
+      $("rr").textContent = pct(data.risk_reversal);
+      $("rr").className = "big " + tone(data.risk_reversal);
+      $("ivLine").textContent = `OTM 콜 IV ${pct(data.otm_call_iv)} · OTM 풋 IV ${pct(data.otm_put_iv)}`;
+      $("surge").textContent = data.session_surge_gap == null ? "—" : data.session_surge_gap.toFixed(1);
+      $("surge").className = "big " + tone((data.session_surge_gap || 0) / 100);
+      $("summary").textContent = data.summary_ko;
+      $("meta").textContent = `${data.symbol} ${fmt(data.spot)} · ${data.futures_symbol} ${fmt(data.futures_price)} · ${data.asof}`;
+      $("rows").innerHTML = (data.slices || []).map(s => `
+        <tr>
+          <td>${s.expiry}</td>
+          <td>${s.dte}</td>
+          <td class="${tone(s.cppi)}">${s.cppi == null ? "—" : s.cppi.toFixed(3)}</td>
+          <td class="call">${fmt(s.call_premium, 0)}</td>
+          <td class="put">${fmt(s.put_premium, 0)}</td>
+          <td>${pct(s.otm_call_iv)}</td>
+          <td>${pct(s.otm_put_iv)}</td>
+          <td class="${tone(s.risk_reversal)}">${pct(s.risk_reversal)}</td>
+        </tr>`).join("");
+    }
+
+    async function load(refresh=false) {
+      $("summary").textContent = "체인을 불러오는 중…";
+      const symbol = $("symbol").value;
+      const maxDte = $("maxDte").value;
+      const url = `/api/signal?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}${refresh ? "&refresh=true" : ""}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        $("summary").innerHTML = `<span class="error">${data.detail || "failed"}</span>`;
+        return;
+      }
+      paint(data);
+    }
+
+    $("refresh").onclick = () => load(true);
+    $("symbol").onchange = () => load(true);
+    $("maxDte").onchange = () => load(true);
+    $("save").onclick = async () => {
+      const symbol = $("symbol").value;
+      const maxDte = $("maxDte").value;
+      const res = await fetch(`/api/snapshot?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}`, {method: "POST"});
+      const data = await res.json();
+      if (!res.ok) {
+        $("summary").innerHTML = `<span class="error">${data.detail || "save failed"}</span>`;
+        return;
+      }
+      paint(data);
+      $("meta").textContent += ` · snapshot #${data.snapshot_id}`;
+    };
+    load(true);
+    setInterval(() => load(true), 120000);
+  </script>
+</body>
+</html>
