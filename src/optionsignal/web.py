@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .collector import DEFAULT_INTERVAL, LiveHub
 from .fetch import DEFAULT_SYMBOL
+from .settings import default_interval, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
 from .store import compact_point, load_history
 
@@ -19,13 +20,18 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app(
-    symbol: str = DEFAULT_SYMBOL,
+    symbol: str | None = None,
     max_dte: int = DEFAULT_HEADLINE_DTE,
-    interval: int = DEFAULT_INTERVAL,
+    interval: int | None = None,
     start_collector: bool = True,
     band: float = 0.08,
 ) -> FastAPI:
-    hub = LiveHub(symbol=symbol, max_dte=max_dte, band=band, interval=interval)
+    hub = LiveHub(
+        symbol=symbol or default_symbol(),
+        max_dte=max_dte,
+        band=band,
+        interval=interval if interval is not None else default_interval(),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -102,7 +108,7 @@ def create_app(
     async def api_settings(
         symbol: str | None = Query(default=None),
         max_dte: int | None = Query(default=None, ge=0, le=7),
-        interval: int | None = Query(default=None, ge=15, le=300),
+        interval: int | None = Query(default=None, ge=1, le=300),
     ):
         hub = _hub()
         if symbol:

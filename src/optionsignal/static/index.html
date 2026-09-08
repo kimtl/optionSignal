@@ -97,6 +97,7 @@
       <div class="sub">스캘핑용 1분 콜/풋 보드 · 서버가 한 번 찍으면 모두 같은 숫자를 봅니다</div>
     </div>
     <div class="pills">
+      <span class="pill" id="feed">시세 —</span>
       <span class="pill" id="session">세션 —</span>
       <span class="pill" id="viewers">접속 0</span>
       <span class="pill" id="countdown">다음 갱신 —</span>
@@ -104,6 +105,7 @@
     </div>
     <div class="controls">
       <select id="symbol">
+        <option value="/NQ">NQ · 나스닥 선물옵션</option>
         <option value="QQQ">QQQ · 나스닥100 ETF</option>
         <option value="^NDX">NDX · 나스닥100 지수</option>
       </select>
@@ -258,6 +260,10 @@
       const sess = status.session || {};
       $("session").textContent = sess.label_ko || "세션";
       $("session").className = "pill" + (sess.live ? " live" : " hot");
+      $("feed").textContent = status.realtime
+        ? "tastytrade 실시간"
+        : (status.source === "tastytrade" ? "tastytrade 연결 중" : "Yahoo 지연");
+      $("feed").className = "pill" + (status.realtime ? " live" : " hot");
       $("viewers").textContent = `접속 ${status.viewers ?? 0}`;
       if (status.last_tick_at) {
         nextAt = Date.parse(status.last_tick_at) + intervalSec * 1000;
@@ -267,9 +273,11 @@
               ? `${status.share_hint}:${status.port || location.port || 8000}`
               : (status.share_hint || location.host));
       $("share").textContent = `공유 ${String(share).replace(/^https?:\/\//, "")}`;
-      if (status.symbol && $("symbol").value !== status.symbol && status.symbol !== "NDX") {
-        const want = status.symbol === "NDX" ? "^NDX" : status.symbol;
-        if ([...$("symbol").options].some(o => o.value === want)) $("symbol").value = want;
+      if (status.symbol && $("symbol").value !== status.symbol) {
+        const want = status.symbol === "NDX" ? "^NDX" : (status.symbol === "NQ" ? "/NQ" : status.symbol);
+        if ([...$("symbol").options].some(o => o.value === want || o.value === status.symbol)) {
+          $("symbol").value = [...$("symbol").options].some(o => o.value === status.symbol) ? status.symbol : want;
+        }
       }
       if (status.max_dte != null) $("maxDte").value = status.max_dte;
       if (status.error) $("summary").innerHTML = `<span class="error">${status.error}</span>`;

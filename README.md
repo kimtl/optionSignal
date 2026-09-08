@@ -1,6 +1,6 @@
 # optionSignal
 
-스캘핑용 **1분 콜/풋 보드**입니다. 서버가 1분마다 나스닥(QQQ/NDX) 근월 옵션 체인을 한 번 찍고, 보는 사람은 모두 같은 웹 화면을 봅니다.
+스캘핑용 **콜/풋 보드**입니다. tastytrade 실시간 호가를 서버가 받아 보드에 찍고, 보는 사람은 모두 같은 웹 화면을 봅니다.
 
 CLI로 숫자를 뽑는 도구가 아닙니다. 한 사람이 웹 서버를 켜면 나머지는 브라우저만 엽니다.
 
@@ -11,16 +11,39 @@ python -m pip install -e ".[dev]"
 python -m optionsignal
 ```
 
-기본은 `0.0.0.0:8000`, 1분 간격, DTE ≤ 1 (오늘·내일 만기)입니다.
+기본은 `0.0.0.0:8000`, DTE ≤ 1입니다. tastytrade 키가 있으면 `/NQ`를 5초마다, 없으면 Yahoo 지연 시세입니다.
 
 - 서버 켠 사람: http://127.0.0.1:8000
 - 같은 와이파이의 다른 사람: 화면 위쪽 **공유 URL** (이 컴퓨터의 LAN IP:8000)
 
-인터넷으로 원격에서 보려면 Railway에 올리면 됩니다. 브라우저마다 Yahoo를 치지 않고, 서버 분봉 하나만 구독합니다.
+인터넷으로 원격에서 보려면 Railway에 올리면 됩니다.
 
 ```bash
-python -m optionsignal serve --interval 60 --max-dte 1 --host 0.0.0.0 --port 8000
+python -m optionsignal serve --interval 5 --max-dte 1 --host 0.0.0.0 --port 8000
 ```
+
+## 시세 출처
+
+정확한 실시간은 **tastytrade DXLink (dxFeed)** 입니다. 계정에 시세 권한이 있으면 NQ 선물옵션 호가·IV가 스트림으로 들어옵니다. 서버는 그 캐시를 기본 5초마다 보드에 찍습니다.
+
+Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙니다.
+
+### tastytrade 연결
+
+1. tastytrade에서 [OAuth 앱](https://developer.tastytrade.com/)을 만들고 client secret을 저장합니다.
+2. 같은 화면에서 **Create Grant**로 refresh token을 만듭니다. (만료되지 않습니다.)
+3. 계정이 **NQ 선물옵션 실시간 시세** 권한을 갖고 있는지 확인합니다.
+4. 환경 변수:
+
+| 변수 | 값 |
+| --- | --- |
+| `TASTYTRADE_CLIENT_SECRET` | OAuth client secret |
+| `TASTYTRADE_REFRESH_TOKEN` | refresh token |
+| `TASTYTRADE_IS_TEST` | 샌드박스는 `true` (실전 시세는 `false`) |
+| `OPTIONSIGNAL_SYMBOL` | `/NQ` |
+| `OPTIONSIGNAL_INTERVAL` | `5` |
+
+키가 있으면 보드가 자동으로 `/NQ` 실시간으로 뜹니다. Railway Variables에도 똑같이 넣으면 됩니다.
 
 ## Railway에 올리기
 
@@ -37,11 +60,13 @@ python -m optionsignal serve --interval 60 --max-dte 1 --host 0.0.0.0 --port 800
 | 변수 / 볼륨 | 용도 |
 | --- | --- |
 | Volume을 `/data`에 마운트 | 재배포해도 분봉 테이프가 남음. 없으면 재시작 때 차트는 초기화 |
-| `OPTIONSIGNAL_INTERVAL=60` | 분 간격 |
+| `OPTIONSIGNAL_INTERVAL=5` | tastytrade일 때 보드 찍는 간격(초) |
 | `OPTIONSIGNAL_MAX_DTE=1` | 오늘·내일 만기만 |
-| `OPTIONSIGNAL_SYMBOL=QQQ` | 기본 심볼 |
+| `OPTIONSIGNAL_SYMBOL=/NQ` | 나스닥 선물옵션 |
+| `TASTYTRADE_CLIENT_SECRET` | tastytrade OAuth |
+| `TASTYTRADE_REFRESH_TOKEN` | tastytrade refresh token |
 
-Yahoo가 데이터센터 IP를 막으면 보드에 에러가 뜹니다. 그때는 로그를 보면 됩니다. 정규장에 가장 잘 움직입니다.
+Yahoo가 데이터센터 IP를 막으면 보드에 에러가 뜹니다. 키가 있으면 Yahoo를 쓰지 않습니다.
 
 ## 스캘핑에서 볼 숫자
 
@@ -55,7 +80,7 @@ ATM 콜−풋은 패리티 때문에 거의 안 움직입니다. 단타는 **1�
 | **5분 Δ** | 조금 더 굵은 흐름 |
 | **25Δ RR** | 콜 IV − 풋 IV. 지수는 원래 풋 스큐라 음수가 흔함 |
 
-정규장(뉴욕 09:30–16:00)에 Yahoo 옵션 호가가 가장 믿을 만합니다. 장전/장후/주말은 지연될 수 있습니다. 실제 NQ 선물옵션 호가는 CME 유료라 같은 지수인 QQQ/NDX로 봅니다.
+정규장(뉴욕 09:30–16:00)과 CME 거의 24시간 선물은 tastytrade 스트림이 따라갑니다. 장후 Yahoo 폴링은 쓰지 마세요.
 
 테스트:
 

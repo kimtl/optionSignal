@@ -45,3 +45,19 @@ def db_path() -> Path:
     if volume:
         return Path(volume) / "optionsignal.db"
     return Path("data/optionsignal.db")
+
+
+def tasty_configured() -> bool:
+    return bool(env_str("TASTYTRADE_CLIENT_SECRET", "") and env_str("TASTYTRADE_REFRESH_TOKEN", ""))
+
+
+def default_symbol() -> str:
+    if tasty_configured():
+        return env_str("OPTIONSIGNAL_SYMBOL", "/NQ")
+    return env_str("OPTIONSIGNAL_SYMBOL", "QQQ")
+
+
+def default_interval() -> int:
+    if tasty_configured():
+        return env_int("OPTIONSIGNAL_INTERVAL", 5)
+    return env_int("OPTIONSIGNAL_INTERVAL", 60)

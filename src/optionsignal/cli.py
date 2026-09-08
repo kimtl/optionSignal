@@ -7,7 +7,7 @@ from typing import Sequence
 
 from .collector import DEFAULT_INTERVAL
 from .fetch import DEFAULT_SYMBOL, fetch_chain
-from .settings import env_int, env_str, listen_port
+from .settings import default_interval, default_symbol, env_int, env_str, listen_port
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report
 from .store import load_history, save_snapshot
 
@@ -140,9 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     hist.set_defaults(func=_cmd_history)
 
     serve = sub.add_parser("serve", help="Shared web board (default)")
-    serve.add_argument("--symbol", default=env_str("OPTIONSIGNAL_SYMBOL", DEFAULT_SYMBOL))
+    serve.add_argument("--symbol", default=default_symbol())
     serve.add_argument("--max-dte", type=int, default=env_int("OPTIONSIGNAL_MAX_DTE", DEFAULT_HEADLINE_DTE))
-    serve.add_argument("--interval", type=int, default=env_int("OPTIONSIGNAL_INTERVAL", DEFAULT_INTERVAL), help="Seconds between ticks, default 60")
+    serve.add_argument("--interval", type=int, default=default_interval(), help="Seconds between board snapshots")
     serve.add_argument("--host", default="0.0.0.0", help="Bind address so others can join")
     serve.add_argument("--port", type=int, default=listen_port(), help="Port. Railway sets PORT automatically.")
     serve.set_defaults(func=_cmd_serve)
@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     dash = sub.add_parser("dashboard", help="Alias for serve")
     dash.add_argument("--symbol", default=DEFAULT_SYMBOL)
     dash.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
-    dash.add_argument("--interval", type=int, default=env_int("OPTIONSIGNAL_INTERVAL", DEFAULT_INTERVAL))
+    dash.add_argument("--interval", type=int, default=default_interval())
     dash.add_argument("--host", default="0.0.0.0")
     dash.add_argument("--port", type=int, default=listen_port())
     dash.set_defaults(func=_cmd_serve)
