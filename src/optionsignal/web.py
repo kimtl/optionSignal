@@ -80,6 +80,9 @@ def create_app(
             "error": hub.error,
             "source": status["source"],
             "realtime": status["realtime"],
+            "phase": status.get("phase"),
+            "contracts": status.get("contracts"),
+            "quoted": status.get("quoted"),
         }
 
     @app.get("/api/live")

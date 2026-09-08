@@ -63,28 +63,45 @@ class LiveHub:
     def status(self) -> dict:
         url = public_url()
         source = self.source_name()
-        realtime = source == "tastytrade" and self.tasty_feed is not None and self.tasty_feed.ready
-        session = {
-            "code": "tasty",
-            "label_ko": "tastytrade DXLink 실시간",
-            "live": True,
-        } if realtime else yahoo_session_status()
-        if source == "tastytrade" and not realtime:
+        feed = self.tasty_feed
+        streaming = bool(feed is not None and getattr(feed, "streaming", False))
+        ready = bool(feed is not None and feed.ready)
+        realtime = source == "tastytrade" and streaming
+        if realtime:
+            session = {
+                "code": "tasty",
+                "label_ko": "tastytrade DXLink 실시간",
+                "live": True,
+            }
+        elif source == "tastytrade" and ready:
+            session = {
+                "code": "tasty-rest",
+                "label_ko": "tastytrade 시세 (REST)",
+                "live": True,
+            }
+        elif source == "tastytrade":
             session = {
                 "code": "tasty-wait",
                 "label_ko": "tastytrade 연결 중",
                 "live": False,
             }
+        else:
+            session = yahoo_session_status()
+        feed_error = getattr(feed, "error", None) if feed else None
         return {
             "symbol": self.symbol,
             "max_dte": self.max_dte,
             "interval": self.interval,
             "viewers": len(self.subscribers),
             "last_tick_at": self.last_tick_at.isoformat(timespec="seconds") if self.last_tick_at else None,
-            "error": self.error or (self.tasty_feed.error if self.tasty_feed else None),
+            "error": self.error or feed_error,
             "session": session,
             "source": source,
             "realtime": realtime,
+            "ready": ready,
+            "phase": getattr(feed, "phase", None) if feed else None,
+            "contracts": len(getattr(feed, "contracts", []) or []) if feed else 0,
+            "quoted": int(getattr(feed, "quoted_count", 0) or 0) if feed else 0,
             "share_hint": url or lan_ip(),
             "public_url": url,
             "port": self.port,
@@ -152,10 +169,6 @@ class LiveHub:
             self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=self.band)
         if self.tasty_feed is not None:
             tasty_task = asyncio.create_task(self.tasty_feed.run(), name="tasty-dxlink")
-            try:
-                await self.tasty_feed.wait_ready()
-            except Exception as exc:  # noqa: BLE001
-                self.error = str(exc)
         try:
             while self._running:
                 try:
