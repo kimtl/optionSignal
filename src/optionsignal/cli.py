@@ -5,6 +5,7 @@ import json
 import sys
 from typing import Sequence
 
+from .collector import DEFAULT_INTERVAL
 from .fetch import DEFAULT_SYMBOL, fetch_chain
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report
 from .store import load_history, save_snapshot
@@ -60,7 +61,7 @@ def _print_report(report) -> None:
 
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
-    chain = fetch_chain(symbol=args.symbol, max_dte=max(args.max_dte, 45))
+    chain = fetch_chain(symbol=args.symbol, max_dte=args.max_dte, expiry_limit=max(2, args.max_dte + 1))
     report = build_report(chain, max_dte=args.max_dte, moneyness_band=args.band)
     if not args.no_save:
         save_snapshot(report)
@@ -81,7 +82,7 @@ def _cmd_history(args: argparse.Namespace) -> int:
         print()
         return 0
     if not rows:
-        print("no snapshots yet — run: optionsignal snapshot")
+        print("no ticks yet — run: python -m optionsignal")
         return 0
     print(f"{'ts':<22} {'cppi':>7} {'ratio':>7} {'RR':>8} {'bias':<10} score")
     for item in rows:
@@ -95,12 +96,20 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_dashboard(args: argparse.Namespace) -> int:
+def _cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from .web import create_app
 
-    app = create_app(symbol=args.symbol, max_dte=args.max_dte)
+    app = create_app(
+        symbol=args.symbol,
+        max_dte=args.max_dte,
+        interval=args.interval,
+        start_collector=True,
+    )
+    app.state.hub.port = args.port
+    print(f"optionSignal  http://{args.host}:{args.port}")
+    print("같은 네트워크의 다른 사람은 이 컴퓨터의 IP:포트로 같이 보면 됩니다.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -108,34 +117,49 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="optionsignal",
-        description="Compare Nasdaq-linked call vs put option premiums.",
+        description="Minute-level Nasdaq call vs put premium board (shared web UI).",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
-    snap = sub.add_parser("snapshot", help="Fetch the chain and print the call/put signal")
+    snap = sub.add_parser("snapshot", help="One-shot fetch (debug)")
     snap.add_argument("--symbol", default=DEFAULT_SYMBOL, help="QQQ (default) or ^NDX")
     snap.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
-    snap.add_argument("--band", type=float, default=DEFAULT_BAND, help="Moneyness band around spot, default 0.08")
+    snap.add_argument("--band", type=float, default=DEFAULT_BAND)
     snap.add_argument("--json", action="store_true")
     snap.add_argument("--no-save", action="store_true")
     snap.set_defaults(func=_cmd_snapshot)
 
-    hist = sub.add_parser("history", help="Show saved snapshots")
+    hist = sub.add_parser("history", help="Show saved minute ticks")
     hist.add_argument("--symbol", default=DEFAULT_SYMBOL)
     hist.add_argument("--limit", type=int, default=50)
     hist.add_argument("--json", action="store_true")
     hist.set_defaults(func=_cmd_history)
 
-    dash = sub.add_parser("dashboard", help="Open a local dashboard")
+    serve = sub.add_parser("serve", help="Shared web board (default)")
+    serve.add_argument("--symbol", default=DEFAULT_SYMBOL)
+    serve.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
+    serve.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Seconds between ticks, default 60")
+    serve.add_argument("--host", default="0.0.0.0", help="Bind address so others can join")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.set_defaults(func=_cmd_serve)
+
+    dash = sub.add_parser("dashboard", help="Alias for serve")
     dash.add_argument("--symbol", default=DEFAULT_SYMBOL)
     dash.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
-    dash.add_argument("--host", default="127.0.0.1")
+    dash.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
+    dash.add_argument("--host", default="0.0.0.0")
     dash.add_argument("--port", type=int, default=8000)
-    dash.set_defaults(func=_cmd_dashboard)
+    dash.set_defaults(func=_cmd_serve)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        argv = ["serve"]
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        parser.print_help()
+        return 2
     return args.func(args)

@@ -94,6 +94,8 @@ def fetch_chain(
     True CME NQ futures option quotes are not on Yahoo. QQQ and NDX options
     are the liquid public proxy for the same index; NQ=F is fetched as the
     futures reference price.
+
+    Scalping polls should keep max_dte small (0–2) so each minute tick is fast.
     """
     now = now or datetime.now(tz=NY)
     today = now.astimezone(NY).date()
@@ -113,15 +115,13 @@ def fetch_chain(
         dte = (expiry - today).days
         if dte < 0:
             continue
-        if dte > max_dte and taken > 0:
+        if dte > max_dte:
             break
         chain = ticker.option_chain(expiry_str)
         quotes.extend(_quotes_from_frame(chain.calls, expiry, "call"))
         quotes.extend(_quotes_from_frame(chain.puts, expiry, "put"))
         taken += 1
         if taken >= expiry_limit:
-            break
-        if dte > max_dte:
             break
 
     if not quotes:

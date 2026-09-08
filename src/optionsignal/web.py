@@ -1,29 +1,54 @@
 from __future__ import annotations
 
-from functools import lru_cache
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .fetch import DEFAULT_SYMBOL, fetch_chain
-from .signal import DEFAULT_HEADLINE_DTE, build_report
-from .store import load_history, save_snapshot
+from .collector import DEFAULT_INTERVAL, LiveHub
+from .fetch import DEFAULT_SYMBOL
+from .signal import DEFAULT_HEADLINE_DTE
+from .store import compact_point, load_history
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-@lru_cache(maxsize=4)
-def _cached_report(symbol: str, max_dte: int, band: float) -> dict:
-    chain = fetch_chain(symbol=symbol, max_dte=max(max_dte, 45))
-    return build_report(chain, max_dte=max_dte, moneyness_band=band).to_dict()
+def create_app(
+    symbol: str = DEFAULT_SYMBOL,
+    max_dte: int = DEFAULT_HEADLINE_DTE,
+    interval: int = DEFAULT_INTERVAL,
+    start_collector: bool = True,
+    band: float = 0.08,
+) -> FastAPI:
+    hub = LiveHub(symbol=symbol, max_dte=max_dte, band=band, interval=interval)
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.hub = hub
+        task = None
+        if start_collector:
+            task = asyncio.create_task(hub.run(), name="optionsignal-collector")
+        try:
+            yield
+        finally:
+            hub.stop()
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-def create_app(symbol: str = DEFAULT_SYMBOL, max_dte: int = DEFAULT_HEADLINE_DTE) -> FastAPI:
-    app = FastAPI(title="optionSignal")
-    app.state.default_symbol = symbol
-    app.state.default_max_dte = max_dte
+    app = FastAPI(title="optionSignal", lifespan=lifespan)
+    app.state.hub = hub
+
+    def _hub() -> LiveHub:
+        return app.state.hub
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -32,50 +57,94 @@ def create_app(symbol: str = DEFAULT_SYMBOL, max_dte: int = DEFAULT_HEADLINE_DTE
             return html_path.read_text(encoding="utf-8")
         return files("optionsignal").joinpath("static/index.html").read_text(encoding="utf-8")
 
-    @app.get("/api/signal")
-    def api_signal(
-        symbol: str | None = Query(default=None),
-        max_dte: int | None = Query(default=None),
-        band: float = Query(default=0.08, ge=0.02, le=0.25),
-        refresh: bool = Query(default=False),
-    ):
-        use_symbol = (symbol or app.state.default_symbol).upper()
-        use_dte = app.state.default_max_dte if max_dte is None else max_dte
-        if refresh:
-            _cached_report.cache_clear()
-        try:
-            return _cached_report(use_symbol, use_dte, band)
-        except Exception as exc:  # noqa: BLE001 — surface data/vendor errors to the UI
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    @app.get("/api/live")
+    def api_live():
+        hub = _hub()
+        if hub.latest is None and hub.error:
+            raise HTTPException(status_code=502, detail=hub.error)
+        return hub.live_payload()
 
-    @app.post("/api/snapshot")
-    def api_snapshot(
-        symbol: str | None = Query(default=None),
-        max_dte: int | None = Query(default=None),
-        band: float = Query(default=0.08),
-    ):
-        use_symbol = (symbol or app.state.default_symbol).upper()
-        use_dte = app.state.default_max_dte if max_dte is None else max_dte
-        _cached_report.cache_clear()
-        try:
-            chain = fetch_chain(symbol=use_symbol, max_dte=max(use_dte, 45))
-            report = build_report(chain, max_dte=use_dte, moneyness_band=band)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        row_id = save_snapshot(report)
-        payload = report.to_dict()
-        payload["snapshot_id"] = row_id
-        return payload
+    @app.get("/api/signal")
+    def api_signal():
+        """Latest shared tick. Does not fetch Yahoo per viewer."""
+        hub = _hub()
+        if hub.latest is None:
+            if hub.error:
+                raise HTTPException(status_code=502, detail=hub.error)
+            raise HTTPException(status_code=503, detail="아직 첫 분봉을 찍지 않았습니다.")
+        return hub.latest
+
+    @app.get("/api/minutes")
+    def api_minutes(limit: int = Query(default=240, ge=10, le=2000)):
+        hub = _hub()
+        points = [compact_point(item) for item in load_history(hub.symbol, limit=limit)]
+        return {"symbol": hub.symbol, "points": points}
 
     @app.get("/api/history")
-    def api_history(
+    def api_history(limit: int = Query(default=240, ge=1, le=2000)):
+        hub = _hub()
+        return JSONResponse(load_history(hub.symbol, limit=limit))
+
+    @app.get("/api/status")
+    def api_status():
+        return _hub().status()
+
+    @app.post("/api/settings")
+    async def api_settings(
         symbol: str | None = Query(default=None),
-        limit: int = Query(default=200, ge=1, le=2000),
+        max_dte: int | None = Query(default=None, ge=0, le=7),
+        interval: int | None = Query(default=None, ge=15, le=300),
     ):
-        use_symbol = (symbol or app.state.default_symbol).upper()
-        return JSONResponse(load_history(use_symbol, limit=limit))
+        hub = _hub()
+        if symbol:
+            hub.symbol = symbol.upper()
+        if max_dte is not None:
+            hub.max_dte = max_dte
+        if interval is not None:
+            hub.interval = interval
+        try:
+            await asyncio.to_thread(hub.collect_once)
+            await hub.broadcast(hub.live_payload() | {"event": "tick"})
+        except Exception as exc:  # noqa: BLE001
+            hub.error = str(exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return hub.live_payload()
+
+    @app.post("/api/tick")
+    async def api_tick():
+        hub = _hub()
+        try:
+            await asyncio.to_thread(hub.collect_once)
+            payload = hub.live_payload() | {"event": "tick"}
+            await hub.broadcast(payload)
+            return payload
+        except Exception as exc:  # noqa: BLE001
+            hub.error = str(exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/stream")
+    async def api_stream(request: Request):
+        hub = _hub()
+        queue = hub.subscribe()
+
+        async def events() -> AsyncIterator[str]:
+            try:
+                yield f"data: {json.dumps(hub.live_payload() | {'event': 'hello'}, ensure_ascii=False)}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        message = await asyncio.wait_for(queue.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield f"data: {json.dumps({'event': 'ping', 'status': hub.status()}, ensure_ascii=False)}\n\n"
+                        continue
+                    yield f"data: {message}\n\n"
+            finally:
+                hub.unsubscribe(queue)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     return app
 
 
-app = create_app()
+app = create_app(start_collector=False)

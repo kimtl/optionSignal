@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .metrics import (
@@ -21,7 +21,7 @@ from .models import ExpirySlice, OptionChain, OptionQuote, SignalReport
 NY = ZoneInfo("America/New_York")
 DEFAULT_BAND = 0.08
 DEFAULT_WING_PCT = 0.03
-DEFAULT_HEADLINE_DTE = 7
+DEFAULT_HEADLINE_DTE = 1
 
 
 def _dte(expiry, now: datetime) -> int:
@@ -159,3 +159,72 @@ def build_report(
         summary_en=summary_en,
         slices=slices,
     )
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def with_deltas(current: dict, prior_ticks: list[dict]) -> dict:
+    """Attach 1-minute and 5-minute changes for scalping."""
+    out = dict(current)
+    out.setdefault("cppi_delta_1m", None)
+    out.setdefault("cppi_delta_5m", None)
+    out.setdefault("call_premium_delta_1m", None)
+    out.setdefault("put_premium_delta_1m", None)
+    out.setdefault("flow_1m", None)
+    if not prior_ticks:
+        return out
+
+    prev = prior_ticks[-1]
+    cur_cppi = current.get("headline_cppi")
+    prev_cppi = prev.get("headline_cppi")
+    if cur_cppi is not None and prev_cppi is not None:
+        out["cppi_delta_1m"] = cur_cppi - prev_cppi
+
+    d_call = float(current.get("headline_call_premium") or 0) - float(prev.get("headline_call_premium") or 0)
+    d_put = float(current.get("headline_put_premium") or 0) - float(prev.get("headline_put_premium") or 0)
+    out["call_premium_delta_1m"] = d_call
+    out["put_premium_delta_1m"] = d_put
+    total = abs(d_call) + abs(d_put)
+    if total > 0:
+        out["flow_1m"] = (d_call - d_put) / total
+
+    now = _parse_ts(current.get("asof") or current.get("stored_at"))
+    if now is None or cur_cppi is None:
+        return out
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=NY)
+    target = now - timedelta(minutes=5)
+    older = []
+    for tick in prior_ticks:
+        ts = _parse_ts(tick.get("asof") or tick.get("stored_at"))
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=now.tzinfo)
+        if ts <= target:
+            older.append(tick)
+    if older and older[-1].get("headline_cppi") is not None:
+        out["cppi_delta_5m"] = cur_cppi - older[-1]["headline_cppi"]
+    return out
+
+
+def yahoo_session_status(now: datetime | None = None) -> dict:
+    """Yahoo option quotes are most trustworthy during US cash hours."""
+    now = (now or datetime.now(tz=NY)).astimezone(NY)
+    weekday = now.weekday()
+    clock = now.time()
+    if weekday >= 5:
+        return {"code": "weekend", "label_ko": "주말 · 옵션 호가 멈춤", "live": False}
+    if time(9, 30) <= clock < time(16, 0):
+        return {"code": "rth", "label_ko": "정규장", "live": True}
+    if clock < time(9, 30):
+        return {"code": "pre", "label_ko": "장전 · 옵션 시세는 지연될 수 있음", "live": False}
+    return {"code": "after", "label_ko": "장후 · 옵션 시세는 지연될 수 있음", "live": False}
+
