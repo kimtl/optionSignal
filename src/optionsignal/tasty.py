@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -49,9 +50,22 @@ def _num(value) -> float | None:
     return number
 
 
-def _right(option_type: object) -> str:
-    text = str(option_type).upper()
-    return "put" if "PUT" in text or text.endswith(".P") or text.endswith(": P") else "call"
+def _right(option_type: object, streamer_symbol: str = "") -> str:
+    """tastytrade uses OptionType.PUT = "P", not the word PUT."""
+    raw = getattr(option_type, "value", option_type)
+    text = str(raw or "").upper().strip()
+    name = str(getattr(option_type, "name", "") or "").upper().strip()
+    if text in {"P", "PUT"} or name in {"P", "PUT"} or text.endswith(".P"):
+        return "put"
+    if "PUT" in f"{name} {text}":
+        return "put"
+    if text in {"C", "CALL"} or name in {"C", "CALL"}:
+        return "call"
+    stream = (streamer_symbol or "").upper().replace(" ", "")
+    match = re.search(r"([CP])\d+(?:\.\d+)?$", stream)
+    if match:
+        return "put" if match.group(1) == "P" else "call"
+    return "call"
 
 
 @dataclass
@@ -373,14 +387,15 @@ class TastyFeed:
                 if spot and not (spot * (1 - self.band) <= strike <= spot * (1 + self.band)):
                     continue
                 oi = int(_num(getattr(option, "open_interest", 0)) or 0)
+                occ = str(getattr(option, "symbol", "") or "")
                 contracts.append(
                     LiveContract(
                         expiry=expiry_date,
-                        right=_right(getattr(option, "option_type", "C")),
+                        right=_right(getattr(option, "option_type", "C"), f"{streamer} {occ}"),
                         strike=strike,
                         streamer_symbol=str(streamer),
                         open_interest=oi,
-                        occ_symbol=str(getattr(option, "symbol", "") or ""),
+                        occ_symbol=occ,
                     )
                 )
         if not contracts:
