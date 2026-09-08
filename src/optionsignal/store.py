@@ -29,7 +29,8 @@ def _connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     return conn
 
 
-def save_snapshot(report: SignalReport, path: Path = DEFAULT_DB) -> int:
+def save_snapshot(report: SignalReport, path: Path | None = None) -> int:
+    path = path or DEFAULT_DB
     payload = json.dumps(report.to_dict(), ensure_ascii=False)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with _connect(path) as conn:
@@ -41,7 +42,8 @@ def save_snapshot(report: SignalReport, path: Path = DEFAULT_DB) -> int:
         return int(cursor.lastrowid)
 
 
-def load_history(symbol: str, limit: int = 200, path: Path = DEFAULT_DB) -> list[dict]:
+def load_history(symbol: str, limit: int = 200, path: Path | None = None) -> list[dict]:
+    path = path or DEFAULT_DB
     with _connect(path) as conn:
         rows = conn.execute(
             """

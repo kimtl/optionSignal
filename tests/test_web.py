@@ -23,8 +23,10 @@ def _chain() -> OptionChain:
     )
 
 
-def test_dashboard_and_signal(monkeypatch):
+def test_dashboard_and_signal(monkeypatch, tmp_path):
     monkeypatch.setattr("optionsignal.web.fetch_chain", lambda **kwargs: _chain())
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.web.load_history", lambda symbol, limit=200: [])
     app = create_app()
     client = TestClient(app)
     home = client.get("/")
