@@ -68,6 +68,20 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 
 Yahoo가 데이터센터 IP를 막으면 보드에 에러가 뜹니다. 키가 있으면 Yahoo를 쓰지 않습니다.
 
+## `/api/tick` 502
+
+Railway 로그의 `POST /api/tick 502 Bad Gateway` 는 게이트웨이가 죽은 게 아니라 **시세 조회가 실패한 것**입니다. 「지금 찍기」는 선택입니다. 서버가 이미 `OPTIONSIGNAL_INTERVAL`마다 찍습니다.
+
+화면 위 요약 칸과 `/health`의 `error`에 이유가 뜹니다.
+
+| 상황 | HTTP | 할 일 |
+| --- | --- | --- |
+| `/NQ`인데 tasty 키가 없음 | 400 | Variables에 `TASTYTRADE_CLIENT_SECRET` + `TASTYTRADE_REFRESH_TOKEN` 을 넣거나 심볼을 QQQ |
+| tasty DXLink 연결 중 | 503 | 몇 초 기다리면 보드가 자동으로 찍힘 |
+| 키/권한/0DTE 없음, Yahoo 차단 | 502 | `TASTYTRADE_IS_TEST=false` 인지, NQ 선물옵션 실시간 권한이 있는지, 오늘 만기가 있는지 확인 |
+
+샌드박스(`TASTYTRADE_IS_TEST=true`)는 실전 호가가 아닙니다.
+
 ## 스캘핑에서 볼 숫자
 
 ATM 콜−풋은 패리티 때문에 거의 안 움직입니다. 단타는 **1분 변화**를 봅니다.

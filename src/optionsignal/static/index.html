@@ -264,6 +264,8 @@
         : (status.source === "tastytrade" ? "tastytrade 연결 중" : "Yahoo 지연");
       $("feed").className = "pill" + (status.realtime ? " live" : " hot");
       $("viewers").textContent = `접속 ${status.viewers ?? 0}`;
+      const nqOpt = [...$("symbol").options].find(o => o.value === "/NQ");
+      if (nqOpt) nqOpt.disabled = status.source !== "tastytrade";
       if (status.last_tick_at) {
         nextAt = Date.parse(status.last_tick_at) + intervalSec * 1000;
       }
@@ -358,6 +360,9 @@
       const data = await res.json();
       if (!res.ok) {
         $("summary").innerHTML = `<span class="error">${data.detail || "tick failed"}</span>`;
+        $("deltaNote").textContent = res.status === 503
+          ? "시세 연결 중입니다. 보드가 자동으로 찍을 때까지 기다리세요."
+          : "시세 조회가 실패했습니다. 아래 메시지를 확인하세요.";
         return;
       }
       apply(data);
