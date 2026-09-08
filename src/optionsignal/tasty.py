@@ -12,6 +12,18 @@ NY = ZoneInfo("America/New_York")
 DEFAULT_FUTURES_ROOT = "/NQ"
 
 
+class FeedNotReady(RuntimeError):
+    """DXLink is still connecting; the board should retry, not treat this as a dead proxy."""
+
+    status_code = 503
+
+
+class FeedConfigError(RuntimeError):
+    """Symbol/source mismatch, e.g. /NQ without tastytrade credentials."""
+
+    status_code = 400
+
+
 def is_futures_root(symbol: str) -> bool:
     cleaned = symbol.strip().upper().lstrip("^")
     return cleaned.startswith("/") or cleaned in {"NQ", "MNQ", "ES", "MES"}
@@ -116,11 +128,13 @@ class TastyFeed:
         self._spot: float | None = None
 
     def snapshot(self) -> OptionChain:
+        if self.error and not self.contracts:
+            raise RuntimeError(f"tastytrade 연결 실패: {self.error}")
         if not self.contracts:
-            raise RuntimeError("tastytrade 체인이 아직 없습니다.")
+            raise FeedNotReady("tastytrade DXLink 연결 중입니다. 체인이 들어오면 보드가 자동으로 찍습니다.")
         spot = self._spot
         if spot is None:
-            raise RuntimeError("tastytrade 기초자산 시세가 아직 없습니다.")
+            raise FeedNotReady("tastytrade 기초자산 시세를 기다리는 중입니다.")
         multiplier = 1 if is_futures_root(self.symbol) else 100
         return snapshot_from_cache(
             self.contracts,
@@ -234,6 +248,7 @@ class TastyFeed:
             chain = await get_option_chain(session, underlying)
         if not isinstance(chain, dict):
             raise RuntimeError("tastytrade 옵션 체인을 읽지 못했습니다.")
+        expiries = sorted(chain)
         for expiry, options in sorted(chain.items()):
             dte = (expiry - today).days
             if dte < 0 or dte > self.max_dte:
@@ -256,7 +271,18 @@ class TastyFeed:
                     )
                 )
         if not contracts:
-            raise RuntimeError("tastytrade에서 0DTE 스트라이크를 찾지 못했습니다.")
+            upcoming = ", ".join(e.isoformat() for e in expiries[:6]) or "없음"
+            zero_dte = [e for e in expiries if (e - today).days == 0]
+            if not zero_dte:
+                raise RuntimeError(
+                    f"tastytrade에 오늘({today.isoformat()}) 0DTE 만기가 없습니다. "
+                    f"남은 만기: {upcoming}"
+                )
+            raise RuntimeError(
+                f"tastytrade에서 오늘({today.isoformat()}) 0DTE 스트라이크를 찾지 못했습니다. "
+                "spot ±8% 안이 비었거나 NQ 선물옵션 시세 권한이 없을 수 있습니다. "
+                f"체인 만기: {upcoming}"
+            )
         if spot is None and len(contracts) > 160:
             contracts = contracts[:160]
         self.contracts = contracts

@@ -1,8 +1,10 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from optionsignal.collector import LiveHub
-from optionsignal.tasty import LiveContract, StreamQuote, snapshot_from_cache
+from optionsignal.tasty import FeedConfigError, LiveContract, StreamQuote, snapshot_from_cache
 from tests.test_metrics import NOW, quote
 from optionsignal.models import OptionChain
 
@@ -66,3 +68,24 @@ def test_hub_reads_tasty_feed(monkeypatch, tmp_path):
     assert payload["headline_cppi"] is not None
     assert hub.status()["source"] == "tastytrade"
     assert hub.status()["realtime"] is True
+
+
+def test_hub_nq_without_tasty_does_not_call_yahoo(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.delenv("TASTYTRADE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("TASTYTRADE_REFRESH_TOKEN", raising=False)
+
+    def boom(**kwargs):
+        raise AssertionError("Yahoo must not be used for /NQ")
+
+    hub = LiveHub(symbol="/NQ", interval=5, fetch_fn=boom)
+    with pytest.raises(FeedConfigError, match="Yahoo"):
+        hub.collect_once()
+
+
+def test_snapshot_raises_not_ready_before_chain():
+    from optionsignal.tasty import FeedNotReady, TastyFeed
+
+    feed = TastyFeed(symbol="/NQ")
+    with pytest.raises(FeedNotReady, match="연결"):
+        feed.snapshot()

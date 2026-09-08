@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -10,7 +11,9 @@ from .fetch import DEFAULT_SYMBOL, fetch_chain
 from .settings import default_interval, public_url, tasty_configured
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report, with_deltas, yahoo_session_status
 from .store import compact_point, load_history, save_snapshot
-from .tasty import TastyFeed
+from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
+
+log = logging.getLogger("optionsignal")
 
 FetchFn = Callable[..., Any]
 DEFAULT_INTERVAL = 60
@@ -97,14 +100,7 @@ class LiveHub:
 
     def collect_once(self) -> dict:
         history = load_history(self.symbol.lstrip("/"), limit=240)
-        if self.tasty_feed is not None:
-            chain = self.tasty_feed.snapshot()
-        else:
-            chain = self.fetch_fn(
-                symbol=self.symbol,
-                max_dte=self.max_dte,
-                expiry_limit=max(1, self.max_dte + 1),
-            )
+        chain = self._load_chain()
         report = build_report(chain, max_dte=self.max_dte, moneyness_band=self.band)
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
@@ -112,6 +108,23 @@ class LiveHub:
         self.error = None
         self.last_tick_at = datetime.now(timezone.utc)
         return payload
+
+    def _load_chain(self):
+        if is_futures_root(self.symbol):
+            if self.tasty_feed is None:
+                if tasty_configured():
+                    raise FeedNotReady("tastytrade 연결을 시작하는 중입니다. 몇 초 뒤 보드가 자동으로 찍습니다.")
+                raise FeedConfigError(
+                    f"{self.symbol} 선물옵션은 Yahoo에 없습니다. "
+                    "Railway Variables에 TASTYTRADE_CLIENT_SECRET과 "
+                    "TASTYTRADE_REFRESH_TOKEN을 넣거나, 심볼을 QQQ로 바꾸세요."
+                )
+            return self.tasty_feed.snapshot()
+        return self.fetch_fn(
+            symbol=self.symbol,
+            max_dte=self.max_dte,
+            expiry_limit=max(1, self.max_dte + 1),
+        )
 
     async def broadcast(self, payload: dict) -> None:
         message = json.dumps(payload, ensure_ascii=False)
@@ -146,14 +159,16 @@ class LiveHub:
         try:
             while self._running:
                 try:
-                    if self.tasty_feed is not None:
-                        payload = self.collect_once()
-                    else:
-                        payload = await asyncio.to_thread(self.collect_once)
+                    payload = await asyncio.to_thread(self.collect_once)
                     await self.broadcast(self.live_payload() | {"event": "tick"})
                     _ = payload
+                except FeedNotReady as exc:
+                    self.error = str(exc)
+                    log.info("tick waiting: %s", exc)
+                    await self.broadcast({"event": "error", "status": self.status()})
                 except Exception as exc:  # noqa: BLE001
                     self.error = str(exc)
+                    log.exception("board tick failed")
                     await self.broadcast({"event": "error", "status": self.status()})
                 try:
                     await asyncio.sleep(self.interval)

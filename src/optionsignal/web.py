@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.resources import files
@@ -16,7 +17,13 @@ from .settings import default_interval, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
 from .store import compact_point, load_history
 
+log = logging.getLogger("optionsignal")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _http_from_exc(exc: Exception) -> HTTPException:
+    status = int(getattr(exc, "status_code", 502) or 502)
+    return HTTPException(status_code=status, detail=str(exc))
 
 
 def create_app(
@@ -66,27 +73,29 @@ def create_app(
     @app.get("/health")
     def health():
         hub = _hub()
+        status = hub.status()
         return {
             "ok": True,
             "tick": hub.latest is not None,
             "error": hub.error,
+            "source": status["source"],
+            "realtime": status["realtime"],
         }
 
     @app.get("/api/live")
     def api_live():
-        hub = _hub()
-        if hub.latest is None and hub.error:
-            raise HTTPException(status_code=502, detail=hub.error)
-        return hub.live_payload()
+        """Board payload. Always 200 so the UI can show a connecting/error state."""
+        return _hub().live_payload()
 
     @app.get("/api/signal")
     def api_signal():
         """Latest shared tick. Does not fetch Yahoo per viewer."""
         hub = _hub()
         if hub.latest is None:
-            if hub.error:
-                raise HTTPException(status_code=502, detail=hub.error)
-            raise HTTPException(status_code=503, detail="아직 첫 분봉을 찍지 않았습니다.")
+            raise HTTPException(
+                status_code=503,
+                detail=hub.error or "아직 첫 분봉을 찍지 않았습니다.",
+            )
         return hub.latest
 
     @app.get("/api/minutes")
@@ -122,7 +131,8 @@ def create_app(
             await hub.broadcast(hub.live_payload() | {"event": "tick"})
         except Exception as exc:  # noqa: BLE001
             hub.error = str(exc)
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            log.exception("settings tick failed")
+            raise _http_from_exc(exc) from exc
         return hub.live_payload()
 
     @app.post("/api/tick")
@@ -135,7 +145,8 @@ def create_app(
             return payload
         except Exception as exc:  # noqa: BLE001
             hub.error = str(exc)
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            log.exception("POST /api/tick failed")
+            raise _http_from_exc(exc) from exc
 
     @app.get("/api/stream")
     async def api_stream(request: Request):
