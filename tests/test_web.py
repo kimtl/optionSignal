@@ -94,6 +94,21 @@ def test_tick_nq_without_tasty_is_config_error(tmp_path, monkeypatch):
         assert live.json()["status"]["error"]
 
 
+def test_minutes_endpoint_strips_futures_slash(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    from optionsignal.store import save_snapshot
+
+    save_snapshot({"symbol": "NQ", "asof": "2026-09-08T10:01:00-04:00", "headline_cppi": 0.2, "futures_price": 24700})
+    app = create_app(symbol="/NQ", start_collector=False, interval=5)
+    with TestClient(app) as client:
+        res = client.get("/api/minutes?tf=5")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["tf"] == 5
+        assert len(body["points"]) == 1
+        assert body["points"][0]["nq_close"] == 24700
+
+
 def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):
     monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
 

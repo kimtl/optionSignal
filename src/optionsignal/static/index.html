@@ -79,7 +79,7 @@
     .summary { font-size: 15px; line-height: 1.45; margin: 8px 0; }
     .meta { color: var(--muted); font-size: 12px; }
     .error { color: var(--put); }
-    canvas { width: 100%; height: 260px; display: block; cursor: ns-resize; }
+    canvas { width: 100%; height: 300px; display: block; cursor: ns-resize; }
     .chart-head {
       display: flex;
       justify-content: space-between;
@@ -183,8 +183,8 @@
             </div>
           </div>
         </div>
-        <canvas id="chart" height="260"></canvas>
-        <p class="meta" id="chartHint">위가 콜 우세(+), 아래가 풋 우세(−). 차트에서 휠로 확대/축소 · 최대 12시간.</p>
+        <canvas id="chart" height="300"></canvas>
+        <p class="meta" id="chartHint">초록/빨강 캔들은 CPPI(왼쪽 축), 노란 캔들은 NQ 선물(오른쪽 축). 휠로 확대/축소 · 최대 12시간.</p>
       </article>
       <article class="card">
         <div class="label">최근 분봉 테이프</div>
@@ -238,6 +238,10 @@
       return `${hours}시간`;
     }
 
+    function chartHint() {
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 초록/빨강 캔들 CPPI(왼쪽 축) · 노란 캔들 NQ 선물(오른쪽 축) · 휠로 확대/축소`;
+    }
+
     function parseTs(p) {
       const raw = p && (p.asof || p.stored_at);
       if (!raw) return null;
@@ -262,6 +266,10 @@
         const open = p.open ?? close;
         const callP = p.headline_call_premium || 0;
         const putP = p.headline_put_premium || 0;
+        const nqClose = p.nq_close ?? p.futures_price ?? null;
+        const nqHigh = p.nq_high ?? nqClose;
+        const nqLow = p.nq_low ?? nqClose;
+        const nqOpen = p.nq_open ?? nqClose;
         const prev = buckets.get(key);
         if (!prev) {
           buckets.set(key, {
@@ -274,6 +282,10 @@
             headline_cppi: close,
             headline_call_premium: callP,
             headline_put_premium: putP,
+            nq_open: nqOpen,
+            nq_high: nqHigh,
+            nq_low: nqLow,
+            nq_close: nqClose,
             _firstCall: callP,
             _firstPut: putP,
           });
@@ -285,6 +297,12 @@
         prev.headline_cppi = close;
         prev.headline_call_premium = callP;
         prev.headline_put_premium = putP;
+        if (nqClose != null) {
+          if (prev.nq_open == null) prev.nq_open = nqOpen;
+          prev.nq_high = prev.nq_high == null ? nqHigh : Math.max(prev.nq_high, nqHigh);
+          prev.nq_low = prev.nq_low == null ? nqLow : Math.min(prev.nq_low, nqLow);
+          prev.nq_close = nqClose;
+        }
       }
       const out = [];
       let prevClose = null;
@@ -417,26 +435,43 @@
       if (status.error) $("summary").innerHTML = `<span class="error">${status.error}</span>`;
     }
 
+    function timeLabel(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
+    }
+
+    function tickStepMs(hours) {
+      if (hours <= 0.5) return 5 * 60 * 1000;
+      if (hours <= 1) return 10 * 60 * 1000;
+      if (hours <= 2) return 15 * 60 * 1000;
+      if (hours <= 4) return 30 * 60 * 1000;
+      if (hours <= 8) return 60 * 60 * 1000;
+      return 2 * 60 * 60 * 1000;
+    }
+
     function drawChart(list) {
       const canvas = $("chart");
       const dpr = window.devicePixelRatio || 1;
       const cssW = canvas.clientWidth || 640;
-      const cssH = 260;
+      const cssH = 300;
       canvas.width = cssW * dpr;
       canvas.height = cssH * dpr;
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
       const bars = chartBars();
-      const padL = 44;
-      const padR = 12;
-      const padT = 14;
-      const padB = 28;
+      const padL = 48;
+      const padR = 64;
+      const padT = 18;
+      const padB = 30;
+      const plotW = cssW - padL - padR;
+      const plotH = cssH - padT - padB;
       ctx.strokeStyle = "#223040";
       ctx.beginPath();
       ctx.moveTo(padL, padT);
       ctx.lineTo(padL, cssH - padB);
       ctx.lineTo(cssW - padR, cssH - padB);
+      ctx.lineTo(cssW - padR, padT);
       ctx.stroke();
       const highs = bars.map(p => p.high ?? p.headline_cppi).filter(v => v != null);
       const lows = bars.map(p => p.low ?? p.headline_cppi).filter(v => v != null);
@@ -446,33 +481,110 @@
         ctx.fillText("분봉이 쌓이면 차트가 그려집니다.", 16, cssH / 2 - 12);
         return;
       }
+      const stepMs = tfMinutes * 60 * 1000;
+      const lastTs = parseTs(bars[bars.length - 1]) ?? Date.now();
+      const endTs = lastTs + stepMs;
+      const startTs = Math.min(parseTs(bars[0]) ?? endTs - stepMs, endTs - chartHours * 3600 * 1000);
+      const xAt = (ts) => padL + (ts - startTs) / Math.max(endTs - startTs, 1) * plotW;
+      const slot = plotW / Math.max((endTs - startTs) / stepMs, 1);
+      const bodyW = Math.max(2, Math.min(14, slot * 0.7));
+
       const min = Math.min(-0.3, ...lows);
       const max = Math.max(0.3, ...highs);
       const span = max - min || 1;
-      const yAt = (v) => padT + (max - v) / span * (cssH - padT - padB);
-      ctx.strokeStyle = "#223040";
+      const yAt = (v) => padT + (max - v) / span * plotH;
+
+      ctx.font = "11px sans-serif";
+      ctx.fillStyle = "#89a0b5";
+      ctx.strokeStyle = "#1a2531";
+      ctx.setLineDash([3, 4]);
+      const tickMs = tickStepMs(chartHours);
+      for (let t = Math.ceil(startTs / tickMs) * tickMs; t <= endTs; t += tickMs) {
+        const x = xAt(t);
+        ctx.beginPath();
+        ctx.moveTo(x, padT);
+        ctx.lineTo(x, cssH - padB);
+        ctx.stroke();
+        const label = timeLabel(t);
+        ctx.fillText(label, x - ctx.measureText(label).width / 2, cssH - 10);
+      }
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = "#2a3a4c";
       ctx.beginPath();
       ctx.moveTo(padL, yAt(0));
       ctx.lineTo(cssW - padR, yAt(0));
       ctx.stroke();
+      ctx.fillStyle = "#7cb8ff";
+      ctx.fillText("CPPI", 6, padT - 6);
       ctx.fillStyle = "#89a0b5";
-      ctx.font = "11px sans-serif";
       ctx.fillText("0", 8, yAt(0) + 4);
       ctx.fillText(max.toFixed(2), 8, padT + 10);
       ctx.fillText(min.toFixed(2), 8, cssH - padB);
-      const n = bars.length;
-      const slot = (cssW - padL - padR) / Math.max(n, 1);
-      const bodyW = Math.max(2, Math.min(14, slot * 0.7));
-      bars.forEach((p, i) => {
+
+      const nqHighs = bars.map(p => p.nq_high ?? p.nq_close ?? p.futures_price).filter(v => v != null);
+      const nqLows = bars.map(p => p.nq_low ?? p.nq_close ?? p.futures_price).filter(v => v != null);
+      let nqY = null;
+      if (nqHighs.length >= 1) {
+        const nqMax = Math.max(...nqHighs);
+        const nqMin = Math.min(...nqLows);
+        const nqPad = Math.max((nqMax - nqMin) * 0.08, 1);
+        const top = nqMax + nqPad;
+        const bot = nqMin - nqPad;
+        const nqSpan = top - bot || 1;
+        nqY = (v) => padT + (top - v) / nqSpan * plotH;
+        ctx.fillStyle = "#f5c15c";
+        ctx.fillText("NQ", cssW - padR + 6, padT - 6);
+        ctx.fillStyle = "#89a0b5";
+        ctx.fillText(fmt(nqMax, 0), cssW - padR + 6, padT + 10);
+        ctx.fillText(fmt(nqMin, 0), cssW - padR + 6, cssH - padB);
+        const last = bars[bars.length - 1];
+        const lastNq = last.nq_close ?? last.futures_price;
+        if (lastNq != null) {
+          ctx.fillStyle = "#f5c15c";
+          ctx.fillText(fmt(lastNq, 0), cssW - padR + 6, nqY(lastNq) + 4);
+        }
+      }
+
+      if (nqY) {
+        ctx.globalAlpha = 0.55;
+        bars.forEach((p) => {
+          const ts = parseTs(p);
+          const close = p.nq_close ?? p.futures_price;
+          if (ts == null || close == null) return;
+          const open = p.nq_open ?? close;
+          const high = p.nq_high ?? close;
+          const low = p.nq_low ?? close;
+          const x = xAt(ts + stepMs / 2);
+          const up = close >= open;
+          ctx.strokeStyle = up ? "#f5c15c" : "#c98a2b";
+          ctx.fillStyle = up ? "transparent" : "#c98a2b";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, nqY(high));
+          ctx.lineTo(x, nqY(low));
+          ctx.stroke();
+          const top = nqY(Math.max(open, close));
+          const bot = nqY(Math.min(open, close));
+          const h = Math.max(1, bot - top);
+          if (up) ctx.strokeRect(x - bodyW / 2, top, bodyW, h);
+          else ctx.fillRect(x - bodyW / 2, top, bodyW, h);
+        });
+        ctx.globalAlpha = 1;
+      }
+
+      bars.forEach((p) => {
+        const ts = parseTs(p);
         const close = p.close ?? p.headline_cppi;
+        if (ts == null || close == null) return;
         const open = p.open ?? close;
         const high = p.high ?? close;
         const low = p.low ?? close;
-        if (close == null) return;
-        const x = padL + slot * (i + 0.5);
+        const x = xAt(ts + stepMs / 2);
         const up = close >= open;
         ctx.strokeStyle = up ? "#3dd68c" : "#ff5d73";
         ctx.fillStyle = ctx.strokeStyle;
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x, yAt(high));
         ctx.lineTo(x, yAt(low));
@@ -482,15 +594,6 @@
         const h = Math.max(1, bot - top);
         ctx.fillRect(x - bodyW / 2, top, bodyW, h);
       });
-      const first = bars[0];
-      const last = bars[bars.length - 1];
-      ctx.fillStyle = "#89a0b5";
-      ctx.font = "11px sans-serif";
-      if (first) ctx.fillText(clock(first.asof || first.stored_at).slice(0, 5), padL, cssH - 8);
-      if (last && n > 1) {
-        const label = clock(last.asof || last.stored_at).slice(0, 5);
-        ctx.fillText(label, cssW - padR - ctx.measureText(label).width, cssH - 8);
-      }
     }
 
     function apply(payload) {
@@ -500,7 +603,7 @@
         points = payload.points;
         paintTape(points);
         drawChart(points);
-        $("chartHint").textContent = `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 위가 콜 우세(+) · 휠로 최대 12시간`;
+        $("chartHint").textContent = chartHint();
       }
       paintStatus(payload.status);
     }
@@ -580,7 +683,7 @@
       });
       if (!fromSlider) $("scale").value = String(chartHours);
       drawChart(points);
-      $("chartHint").textContent = `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 위가 콜 우세(+) · 휠로 최대 12시간`;
+      $("chartHint").textContent = chartHint();
     }
 
     $("tf1").onclick = () => setTf(1);

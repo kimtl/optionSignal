@@ -149,6 +149,10 @@ def compact_point(item: dict) -> dict:
         "high": item.get("high"),
         "low": item.get("low"),
         "close": item.get("close"),
+        "nq_open": item.get("nq_open"),
+        "nq_high": item.get("nq_high"),
+        "nq_low": item.get("nq_low"),
+        "nq_close": item.get("nq_close"),
     }
 
 
@@ -173,8 +177,21 @@ def floor_bar_time(ts: datetime, minutes: int) -> datetime:
     return ts
 
 
+def _futures_price(point: dict) -> float | None:
+    for key in ("nq_close", "futures_price", "spot"):
+        value = point.get(key)
+        if value is not None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number == number and number > 0:
+                return number
+    return None
+
+
 def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
-    """Bucket ticks (or smaller bars) into 1m/5m CPPI candles."""
+    """Bucket ticks (or smaller bars) into 1m/5m CPPI candles, with NQ OHLC alongside."""
     minutes = max(1, int(minutes))
     buckets: dict[str, dict] = {}
     order: list[str] = []
@@ -189,6 +206,10 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
         high = float(point.get("high") if point.get("high") is not None else close)
         low = float(point.get("low") if point.get("low") is not None else close)
         open_ = float(point.get("open") if point.get("open") is not None else close)
+        nq_close = _futures_price(point)
+        nq_high = float(point["nq_high"]) if point.get("nq_high") is not None else nq_close
+        nq_low = float(point["nq_low"]) if point.get("nq_low") is not None else nq_close
+        nq_open = float(point["nq_open"]) if point.get("nq_open") is not None else nq_close
         key_dt = floor_bar_time(ts, minutes)
         key = key_dt.isoformat()
         call_prem = float(point.get("headline_call_premium") or 0)
@@ -204,6 +225,11 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
                 "headline_cppi": close,
                 "headline_call_premium": call_prem,
                 "headline_put_premium": put_prem,
+                "nq_open": nq_open,
+                "nq_high": nq_high,
+                "nq_low": nq_low,
+                "nq_close": nq_close,
+                "futures_price": nq_close,
                 "_first_call": call_prem,
                 "_first_put": put_prem,
             }
@@ -217,6 +243,13 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
         bar["headline_call_premium"] = call_prem
         bar["headline_put_premium"] = put_prem
         bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
+        if nq_close is not None:
+            if bar["nq_open"] is None:
+                bar["nq_open"] = nq_open
+            bar["nq_high"] = nq_high if bar["nq_high"] is None else max(bar["nq_high"], nq_high)
+            bar["nq_low"] = nq_low if bar["nq_low"] is None else min(bar["nq_low"], nq_low)
+            bar["nq_close"] = nq_close
+            bar["futures_price"] = nq_close
     out: list[dict] = []
     prev_close = None
     for key in order:

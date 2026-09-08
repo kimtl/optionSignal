@@ -107,14 +107,14 @@ def create_app(
         tf: int = Query(default=1, ge=1, le=60),
     ):
         hub = _hub()
-        raw = load_history(hub.symbol, limit=RAW_HISTORY_LIMIT)
+        raw = load_history(hub.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
         bars = aggregate_bars(raw, minutes=tf)
         return {"symbol": hub.symbol, "tf": tf, "points": [compact_point(item) for item in bars[-limit:]]}
 
     @app.get("/api/history")
     def api_history(limit: int = Query(default=BAR_HISTORY_LIMIT, ge=1, le=RAW_HISTORY_LIMIT)):
         hub = _hub()
-        return JSONResponse(load_history(hub.symbol, limit=limit))
+        return JSONResponse(load_history(hub.symbol.lstrip("/"), limit=limit))
 
     @app.get("/api/status")
     def api_status():

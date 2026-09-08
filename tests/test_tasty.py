@@ -98,6 +98,7 @@ def test_hub_reads_tasty_feed(monkeypatch, tmp_path):
     assert hub.status()["source"] == "tastytrade"
     assert hub.status()["realtime"] is True
     assert hub.status()["session"]["code"] == "tasty"
+    assert hub.live_payload()["points"], "live points should find /NQ ticks stored as NQ"
 
 
 def test_pick_front_future_skips_product_root_style_dates():
