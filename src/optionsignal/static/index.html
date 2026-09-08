@@ -79,7 +79,7 @@
     .summary { font-size: 15px; line-height: 1.45; margin: 8px 0; }
     .meta { color: var(--muted); font-size: 12px; }
     .error { color: var(--put); }
-    canvas { width: 100%; height: 300px; display: block; cursor: ns-resize; }
+    canvas { width: 100%; height: 360px; display: block; cursor: ns-resize; }
     .chart-head {
       display: flex;
       justify-content: space-between;
@@ -164,6 +164,26 @@
     table.chain td.bid { color: var(--call); }
     table.chain td.ask { color: var(--put); }
     .chain-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .board-hero { grid-template-columns: 1fr 1.4fr; }
+    .board-wide { grid-template-columns: 1fr; }
+    .warn { color: var(--warn); }
+    .pick-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; min-height: 26px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px 3px 10px;
+      font-size: 12.5px;
+      font-variant-numeric: tabular-nums;
+    }
+    .chip i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+    .chip button { border: none; background: transparent; color: var(--muted); padding: 0 2px; font-size: 14px; line-height: 1; }
+    .chip button:hover { color: var(--put); }
+    #cppiDetails .hero { margin-top: 4px; }
+    #cppiDetails .card { background: #0c1218; }
     @media (max-width: 980px) {
       .hero, .wide { grid-template-columns: 1fr; }
       .big { font-size: 40px; }
@@ -174,7 +194,7 @@
   <header>
     <div>
       <h1>optionSignal LIVE</h1>
-      <div class="sub">0DTE 콜/풋 보드 · 서버가 한 번 찍으면 모두 같은 숫자를 봅니다</div>
+      <div class="sub">NQ 선물 · 0DTE 옵션 시세 보드 · 서버가 한 번 찍으면 모두 같은 숫자를 봅니다</div>
     </div>
     <div class="pills">
       <span class="pill" id="feed">시세 —</span>
@@ -190,15 +210,6 @@
         <option value="^NDX">NDX · 나스닥100 지수</option>
       </select>
       <label class="sub">0DTE <input id="maxDte" type="number" min="0" max="0" value="0" style="width:58px" /></label>
-      <label class="sub">선정
-        <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지">
-          <option value="0">등가격 ±8% 밴드</option>
-          <option value="100">등가격 ±100포</option>
-          <option value="150">등가격 ±150포</option>
-          <option value="200">등가격 ±200포</option>
-          <option value="300">등가격 ±300포</option>
-        </select>
-      </label>
       <button id="tick">지금 찍기</button>
       <button id="copy">링크 복사</button>
     </div>
@@ -248,37 +259,40 @@
     </section>
   </main>
   <main id="boardPanel" class="panel active">
-    <section class="hero">
-      <article class="card" id="cppiCard">
-        <div class="label">CPPI · 콜-풋 프리미엄</div>
-        <div id="cppi" class="big neutral">—</div>
-        <div id="bias" class="sub">첫 분봉을 기다리는 중</div>
-        <p class="summary" id="summary">서버가 0DTE 체인만 가져옵니다.</p>
-        <div class="bars">
-          <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
-          <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
-        </div>
-        <p class="meta" id="strikeLine">선정 행사가 —</p>
-      </article>
-      <article class="card" id="deltaCard">
-        <div class="label">1분 변화 · 스캘핑 급등</div>
-        <div id="delta" class="big neutral">—</div>
-        <p class="summary" id="deltaNote">직전 분 대비 CPPI 변화입니다. 레벨보다 이 숫자가 단타에 맞습니다.</p>
-        <p class="meta" id="flowLine">1분 프리미엄 흐름 —</p>
-        <p class="meta" id="delta5">5분 Δ —</p>
-      </article>
-      <article class="card">
-        <div class="label">NQ 선물 · 리스크 리버설</div>
-        <div id="nq" class="mid neutral">—</div>
-        <div id="rr" class="mid neutral">RR —</div>
-        <p class="meta" id="ivLine">OTM IV —</p>
+    <section class="hero board-hero">
+      <article class="card" id="nqCard">
+        <div class="label">NQ 나스닥 선물 · 실시간</div>
+        <div id="nq" class="big warn">—</div>
+        <div class="sub" id="nqChange">첫 틱을 기다리는 중</div>
+        <p class="meta" id="nqRange">표시 구간 고가 — · 저가 —</p>
         <p class="meta" id="meta"></p>
       </article>
+      <article class="card" id="pickCard">
+        <div class="label">옵션 선택 · 차트에 추가</div>
+        <div class="pick-row">
+          <select id="pickStrike"><option value="">행사가…</option></select>
+          <select id="pickRight">
+            <option value="C">콜</option>
+            <option value="P">풋</option>
+          </select>
+          <button type="button" id="pickAdd">추가</button>
+          <button type="button" id="pickAtm" title="등가격 콜과 풋을 한 번에">ATM 콜+풋</button>
+        </div>
+        <div class="chips" id="pickChips"><span class="meta">선택한 옵션이 없습니다. 위에서 행사가와 콜/풋을 고르고 추가하세요. 최대 6개.</span></div>
+        <p class="meta">옵션 시세는 중간가(매수·매도 평균) 기준이고, 보드가 찍는 간격으로 쌓입니다. 선택은 이 브라우저에 저장됩니다.</p>
+      </article>
     </section>
-    <section class="wide">
+    <section class="card" id="pickTableCard" style="display:none">
+      <div class="label">선택한 옵션 시세</div>
+      <table>
+        <thead><tr><th>옵션</th><th>중간가</th><th>매수</th><th>매도</th><th>체결</th><th>거래량</th><th id="pickDeltaHead">Δ1m</th><th>30분 Δ</th><th></th></tr></thead>
+        <tbody id="pickRows"></tbody>
+      </table>
+    </section>
+    <section class="wide board-wide">
       <article class="card">
         <div class="chart-head">
-          <div class="label">CPPI 차트</div>
+          <div class="label">NQ 선물 봉차트 · 선택 옵션 시세</div>
           <div class="controls">
             <div class="tf-group">
               <button type="button" id="tf1" class="active" data-tf="1">1분봉</button>
@@ -294,34 +308,68 @@
             </div>
           </div>
         </div>
-        <canvas id="chart" height="300"></canvas>
-        <p class="meta" id="chartHint">파란 선이 CPPI(왼쪽 축, 위가 콜 우세), 노란 캔들이 NQ 선물(오른쪽 축). 휠로 확대/축소 · 최대 12시간.</p>
-      </article>
-      <article class="card">
-        <div class="label">최근 분봉 테이프</div>
-        <table>
-          <thead><tr><th>봉</th><th>CPPI</th><th id="tapeDeltaHead">Δ</th><th>콜Δ</th><th>풋Δ</th></tr></thead>
-          <tbody id="tape"></tbody>
-        </table>
+        <canvas id="chart" height="360"></canvas>
+        <p class="meta" id="chartHint">NQ 선물 캔들(왼쪽 축). 선택한 옵션은 오른쪽 축에 선으로. 휠로 확대/축소 · 최대 12시간.</p>
       </article>
     </section>
     <section class="card">
-      <div class="label">0DTE 만기</div>
-      <table>
-        <thead>
-          <tr>
-            <th>만기</th><th>DTE</th><th>CPPI</th><th>콜 프리미엄</th><th>풋 프리미엄</th><th>콜 IV</th><th>풋 IV</th><th>RR</th>
-          </tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
+      <details id="cppiDetails">
+        <summary>CPPI · 콜-풋 프리미엄 (참고용, 접힘)</summary>
+        <div class="controls" style="margin:6px 0 12px">
+          <label class="sub">선정
+            <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지">
+              <option value="0">등가격 ±8% 밴드</option>
+              <option value="100">등가격 ±100포</option>
+              <option value="150">등가격 ±150포</option>
+              <option value="200">등가격 ±200포</option>
+              <option value="300">등가격 ±300포</option>
+            </select>
+          </label>
+        </div>
+        <section class="hero">
+          <article class="card" id="cppiCard">
+            <div class="label">CPPI · 콜-풋 프리미엄</div>
+            <div id="cppi" class="big neutral">—</div>
+            <div id="bias" class="sub">첫 분봉을 기다리는 중</div>
+            <p class="summary" id="summary">서버가 0DTE 체인만 가져옵니다.</p>
+            <div class="bars">
+              <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
+              <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
+            </div>
+            <p class="meta" id="strikeLine">선정 행사가 —</p>
+          </article>
+          <article class="card" id="deltaCard">
+            <div class="label">1분 변화</div>
+            <div id="delta" class="big neutral">—</div>
+            <p class="summary" id="deltaNote">직전 분 대비 CPPI 변화입니다.</p>
+            <p class="meta" id="flowLine">1분 프리미엄 흐름 —</p>
+            <p class="meta" id="delta5">5분 Δ —</p>
+          </article>
+          <article class="card">
+            <div class="label">리스크 리버설</div>
+            <div id="rr" class="mid neutral">RR —</div>
+            <p class="meta" id="ivLine">OTM IV —</p>
+            <table>
+              <thead><tr><th>만기</th><th>DTE</th><th>CPPI</th><th>콜 프리미엄</th><th>풋 프리미엄</th><th>RR</th></tr></thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </article>
+        </section>
+        <section class="card" style="margin-top:14px">
+          <div class="label">최근 분봉 테이프</div>
+          <table>
+            <thead><tr><th>봉</th><th>CPPI</th><th id="tapeDeltaHead">Δ</th><th>콜Δ</th><th>풋Δ</th></tr></thead>
+            <tbody id="tape"></tbody>
+          </table>
+        </section>
+      </details>
     </section>
     <section class="card">
-      <details open>
-        <summary>같이 보는 방법 · 이 숫자가 의미하는 것</summary>
-        한 사람이 <b>python -m optionsignal</b> 로 이 보드를 켜면, 같은 와이파이의 다른 사람은 위 공유 URL만 열면 됩니다.
-        브라우저마다 Yahoo를 치지 않고, 서버가 1분마다 한 번 찍은 값을 같이 봅니다.
-        스캘핑에서는 CPPI 레벨보다 <b>직전 틱 Δ</b>와 <b>콜/풋 프리미엄 흐름</b>을 봅니다. 숫자는 전부 <b>0DTE</b>만 사용합니다.
+      <details>
+        <summary>같이 보는 방법</summary>
+        한 사람이 <b>python -m optionsignal</b> 로 이 보드를 켜면, 다른 사람은 위 공유 URL만 열면 됩니다.
+        서버가 한 번 찍은 값을 모두 같이 봅니다. 차트의 NQ 캔들은 보드가 찍는 간격(기본 5초)의 시세를 1분/5분봉으로 묶은 것이고,
+        옵션 선은 그 시점 중간가입니다. 「옵션 체인」 탭에서 행사가별 거래량·OI·델타를 보고 여기서 고르면 됩니다.
       </details>
     </section>
   </main>
@@ -350,7 +398,8 @@
     }
 
     function chartHint() {
-      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 파란 선 CPPI(왼쪽 축, 위가 콜 우세) · 노란 캔들 NQ 선물(오른쪽 축) · 휠로 확대/축소`;
+      const opt = (typeof picks !== "undefined" && picks.length) ? ` · 옵션 ${picks.length}개 선(오른쪽 축, 중간가)` : "";
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · NQ 선물 캔들(왼쪽 축)${opt} · 휠로 확대/축소`;
     }
 
     function parseTs(p) {
@@ -471,25 +520,41 @@
         $("flowLine").textContent = `1분 콜Δ ${fmt(tick.call_premium_delta_1m, 0)} · 풋Δ ${fmt(tick.put_premium_delta_1m, 0)} · flow ${signed(flow, 2)}`;
       }
       $("delta5").textContent = `5분 Δ ${signed(tick.cppi_delta_5m, 3)}`;
-      $("nq").textContent = `NQ ${fmt(tick.futures_price, 2)}`;
+      const nqPx = tick.futures_price ?? tick.spot;
+      $("nq").textContent = nqPx == null ? "—" : fmt(nqPx, 2);
       $("rr").textContent = `RR ${pct(tick.risk_reversal)}`;
       $("rr").className = "mid " + tone(tick.risk_reversal);
       $("ivLine").textContent = `OTM 콜 IV ${pct(tick.otm_call_iv)} · 풋 IV ${pct(tick.otm_put_iv)}`;
-      $("meta").textContent = `${tick.symbol} ${fmt(tick.spot)} · ${tick.asof || ""}`;
+      $("meta").textContent = `${tick.symbol} ${fmt(tick.spot)} · ${tick.asof ? clock(tick.asof) : ""} · ${tick.source || ""}`;
       $("rows").innerHTML = (tick.slices || []).map(s => `
         <tr>
           <td>${s.expiry}</td><td>${s.dte}</td>
           <td class="${tone(s.cppi)}">${s.cppi == null ? "—" : s.cppi.toFixed(3)}</td>
           <td class="call">${fmt(s.call_premium, 0)}</td>
           <td class="put">${fmt(s.put_premium, 0)}</td>
-          <td>${pct(s.otm_call_iv)}</td><td>${pct(s.otm_put_iv)}</td>
           <td class="${tone(s.risk_reversal)}">${pct(s.risk_reversal)}</td>
         </tr>`).join("");
-      $("cppiCard").classList.remove("flash");
-      $("deltaCard").classList.remove("flash");
-      void $("cppiCard").offsetWidth;
-      $("cppiCard").classList.add("flash");
-      $("deltaCard").classList.add("flash");
+      $("nqCard").classList.remove("flash");
+      void $("nqCard").offsetWidth;
+      $("nqCard").classList.add("flash");
+    }
+
+    function paintNqSummary(bars) {
+      const withNq = bars.filter(p => (p.nq_close ?? p.futures_price) != null);
+      if (!withNq.length) {
+        $("nqChange").textContent = "첫 틱을 기다리는 중";
+        $("nqRange").textContent = "표시 구간 고가 — · 저가 —";
+        return;
+      }
+      const first = withNq[0];
+      const last = withNq[withNq.length - 1];
+      const open = first.nq_open ?? first.nq_close ?? first.futures_price;
+      const close = last.nq_close ?? last.futures_price;
+      const diff = close - open;
+      const hi = Math.max(...withNq.map(p => p.nq_high ?? p.nq_close ?? p.futures_price));
+      const lo = Math.min(...withNq.map(p => p.nq_low ?? p.nq_close ?? p.futures_price));
+      $("nqChange").innerHTML = `<span class="${diff >= 0 ? "call" : "put"}">${diff >= 0 ? "▲" : "▼"} ${signed(diff, 2)} (${signed(diff / open * 100, 2)}%)</span> · ${hoursLabel(chartHours)} 시작 ${fmt(open, 2)} 대비`;
+      $("nqRange").textContent = `표시 구간 고가 ${fmt(hi, 2)} · 저가 ${fmt(lo, 2)} · 폭 ${fmt(hi - lo, 0)}포`;
     }
 
     function paintTape(list) {
@@ -569,19 +634,42 @@
       return 2 * 60 * 60 * 1000;
     }
 
+    const OPTION_COLORS = ["#7cb8ff", "#3dd68c", "#ff5d73", "#c78bff", "#4dd0e1", "#ffa657"];
+
+    function optionBarsForTf(bars, minutes) {
+      if (minutes === 1) return bars;
+      const out = new Map();
+      for (const b of bars || []) {
+        const ts = parseTs(b);
+        if (ts == null) continue;
+        const key = floorBar(ts, minutes);
+        const prev = out.get(key);
+        if (!prev) {
+          out.set(key, {asof: new Date(key).toISOString(), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume});
+          continue;
+        }
+        prev.high = Math.max(prev.high, b.high);
+        prev.low = Math.min(prev.low, b.low);
+        prev.close = b.close;
+        prev.volume = Math.max(prev.volume || 0, b.volume || 0);
+      }
+      return [...out.values()];
+    }
+
     function drawChart(list) {
       const canvas = $("chart");
       const dpr = window.devicePixelRatio || 1;
       const cssW = canvas.clientWidth || 640;
-      const cssH = 300;
+      const cssH = 360;
       canvas.width = cssW * dpr;
       canvas.height = cssH * dpr;
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
       const bars = chartBars();
-      const padL = 48;
-      const padR = 64;
+      paintNqSummary(bars);
+      const padL = 70;
+      const padR = selectedKeys().length ? 118 : 16;
       const padT = 18;
       const padB = 30;
       const plotW = cssW - padL - padR;
@@ -593,13 +681,11 @@
       ctx.lineTo(cssW - padR, cssH - padB);
       ctx.lineTo(cssW - padR, padT);
       ctx.stroke();
-      const closes = bars.map(p => p.close ?? p.headline_cppi).filter(v => v != null);
-      const highs = closes;
-      const lows = closes;
-      if (highs.length < 1) {
+      const nqBars = bars.filter(p => (p.nq_close ?? p.futures_price) != null);
+      if (nqBars.length < 1) {
         ctx.fillStyle = "#89a0b5";
         ctx.font = "13px sans-serif";
-        ctx.fillText("분봉이 쌓이면 차트가 그려집니다.", 16, cssH / 2 - 12);
+        ctx.fillText("NQ 시세가 쌓이면 봉차트가 그려집니다.", 16, cssH / 2 - 12);
         return;
       }
       const stepMs = tfMinutes * 60 * 1000;
@@ -609,11 +695,6 @@
       const xAt = (ts) => padL + (ts - startTs) / Math.max(endTs - startTs, 1) * plotW;
       const slot = plotW / Math.max((endTs - startTs) / stepMs, 1);
       const bodyW = Math.max(2, Math.min(14, slot * 0.7));
-
-      const min = Math.min(-0.3, ...lows);
-      const max = Math.max(0.3, ...highs);
-      const span = max - min || 1;
-      const yAt = (v) => padT + (max - v) / span * plotH;
 
       ctx.font = "11px sans-serif";
       ctx.fillStyle = "#89a0b5";
@@ -631,90 +712,248 @@
       }
       ctx.setLineDash([]);
 
-      ctx.strokeStyle = "#2a3a4c";
-      ctx.beginPath();
-      ctx.moveTo(padL, yAt(0));
-      ctx.lineTo(cssW - padR, yAt(0));
-      ctx.stroke();
-      ctx.fillStyle = "#7cb8ff";
-      ctx.fillText("CPPI", 6, padT - 6);
+      const nqMax = Math.max(...nqBars.map(p => p.nq_high ?? p.nq_close ?? p.futures_price));
+      const nqMin = Math.min(...nqBars.map(p => p.nq_low ?? p.nq_close ?? p.futures_price));
+      const nqPad = Math.max((nqMax - nqMin) * 0.08, 2);
+      const top = nqMax + nqPad;
+      const bot = nqMin - nqPad;
+      const nqSpan = top - bot || 1;
+      const nqY = (v) => padT + (top - v) / nqSpan * plotH;
+      ctx.fillStyle = "#f5c15c";
+      ctx.fillText("NQ", 8, padT - 6);
       ctx.fillStyle = "#89a0b5";
-      ctx.fillText("0", 8, yAt(0) + 4);
-      ctx.fillText(max.toFixed(2), 8, padT + 10);
-      ctx.fillText(min.toFixed(2), 8, cssH - padB);
-
-      const nqHighs = bars.map(p => p.nq_high ?? p.nq_close ?? p.futures_price).filter(v => v != null);
-      const nqLows = bars.map(p => p.nq_low ?? p.nq_close ?? p.futures_price).filter(v => v != null);
-      let nqY = null;
-      if (nqHighs.length >= 1) {
-        const nqMax = Math.max(...nqHighs);
-        const nqMin = Math.min(...nqLows);
-        const nqPad = Math.max((nqMax - nqMin) * 0.08, 1);
-        const top = nqMax + nqPad;
-        const bot = nqMin - nqPad;
-        const nqSpan = top - bot || 1;
-        nqY = (v) => padT + (top - v) / nqSpan * plotH;
-        ctx.fillStyle = "#f5c15c";
-        ctx.fillText("NQ", cssW - padR + 6, padT - 6);
-        ctx.fillStyle = "#89a0b5";
-        ctx.fillText(fmt(nqMax, 0), cssW - padR + 6, padT + 10);
-        ctx.fillText(fmt(nqMin, 0), cssW - padR + 6, cssH - padB);
-        const last = bars[bars.length - 1];
-        const lastNq = last.nq_close ?? last.futures_price;
-        if (lastNq != null) {
-          ctx.fillStyle = "#f5c15c";
-          ctx.fillText(fmt(lastNq, 0), cssW - padR + 6, nqY(lastNq) + 4);
-        }
-      }
-
-      if (nqY) {
-        ctx.globalAlpha = 0.55;
-        bars.forEach((p) => {
-          const ts = parseTs(p);
-          const close = p.nq_close ?? p.futures_price;
-          if (ts == null || close == null) return;
-          const open = p.nq_open ?? close;
-          const high = p.nq_high ?? close;
-          const low = p.nq_low ?? close;
-          const x = xAt(ts + stepMs / 2);
-          const up = close >= open;
-          ctx.strokeStyle = up ? "#f5c15c" : "#c98a2b";
-          ctx.fillStyle = up ? "transparent" : "#c98a2b";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x, nqY(high));
-          ctx.lineTo(x, nqY(low));
-          ctx.stroke();
-          const top = nqY(Math.max(open, close));
-          const bot = nqY(Math.min(open, close));
-          const h = Math.max(1, bot - top);
-          if (up) ctx.strokeRect(x - bodyW / 2, top, bodyW, h);
-          else ctx.fillRect(x - bodyW / 2, top, bodyW, h);
-        });
-        ctx.globalAlpha = 1;
-      }
-
-      const linePts = [];
-      bars.forEach((p) => {
-        const ts = parseTs(p);
-        const close = p.close ?? p.headline_cppi;
-        if (ts == null || close == null) return;
-        linePts.push({x: xAt(ts + stepMs / 2), y: yAt(close), v: close});
-      });
-      if (linePts.length) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#7cb8ff";
+      ctx.strokeStyle = "#1a2531";
+      const gridN = 5;
+      for (let i = 0; i <= gridN; i++) {
+        const v = bot + (top - bot) * i / gridN;
+        const y = nqY(v);
+        ctx.setLineDash([2, 5]);
         ctx.beginPath();
-        linePts.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+        ctx.moveTo(padL, y);
+        ctx.lineTo(cssW - padR, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText(fmt(v, 0), 8, y + 4);
+      }
+      nqBars.forEach((p) => {
+        const ts = parseTs(p);
+        const close = p.nq_close ?? p.futures_price;
+        const open = p.nq_open ?? close;
+        const high = p.nq_high ?? close;
+        const low = p.nq_low ?? close;
+        const x = xAt(ts + stepMs / 2);
+        const up = close >= open;
+        ctx.strokeStyle = up ? "#3dd68c" : "#ff5d73";
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, nqY(high));
+        ctx.lineTo(x, nqY(low));
+        ctx.stroke();
+        const t = nqY(Math.max(open, close));
+        const b = nqY(Math.min(open, close));
+        ctx.fillRect(x - bodyW / 2, t, bodyW, Math.max(1, b - t));
+      });
+      const lastNq = nqBars[nqBars.length - 1];
+      const lastPx = lastNq.nq_close ?? lastNq.futures_price;
+      ctx.strokeStyle = "#f5c15c";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(padL, nqY(lastPx));
+      ctx.lineTo(cssW - padR, nqY(lastPx));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#0b1117";
+      const lastLabel = fmt(lastPx, 2);
+      ctx.fillRect(4, nqY(lastPx) - 8, padL - 8, 16);
+      ctx.fillStyle = "#f5c15c";
+      ctx.fillText(lastLabel, 8, nqY(lastPx) + 4);
+
+      const keys = selectedKeys();
+      if (!keys.length) return;
+      const cutoff = startTs;
+      const lines = keys.map((key, i) => {
+        const raw = (optionSeries[key] && optionSeries[key].bars) || [];
+        const bs = optionBarsForTf(raw, tfMinutes).filter(b => { const t = parseTs(b); return t != null && t >= cutoff; });
+        return {key, color: OPTION_COLORS[i % OPTION_COLORS.length], bars: bs};
+      }).filter(l => l.bars.length);
+      if (!lines.length) {
+        ctx.fillStyle = "#89a0b5";
+        ctx.fillText("옵션 시세가 쌓이면 선이 그려집니다.", cssW - padR - 190, padT + 14);
+        return;
+      }
+      const all = lines.flatMap(l => l.bars.flatMap(b => [b.high ?? b.close, b.low ?? b.close]));
+      let oMax = Math.max(...all);
+      let oMin = Math.min(...all);
+      const oPad = Math.max((oMax - oMin) * 0.1, 0.5);
+      oMax += oPad;
+      oMin = Math.max(0, oMin - oPad);
+      const oSpan = oMax - oMin || 1;
+      const oY = (v) => padT + (oMax - v) / oSpan * plotH;
+      ctx.fillStyle = "#89a0b5";
+      ctx.fillText("옵션", cssW - padR + 6, padT - 6);
+      ctx.fillText(fmt(oMax, 2), cssW - padR + 6, padT + 10);
+      ctx.fillText(fmt(oMin, 2), cssW - padR + 6, cssH - padB);
+      const endLabels = [];
+      lines.forEach((l) => {
+        ctx.strokeStyle = l.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        l.bars.forEach((b, i) => {
+          const x = xAt(parseTs(b) + stepMs / 2);
+          const y = oY(b.close);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
         ctx.stroke();
         ctx.lineWidth = 1;
-        const end = linePts[linePts.length - 1];
-        ctx.fillStyle = end.v > 0.02 ? "#3dd68c" : end.v < -0.02 ? "#ff5d73" : "#7cb8ff";
+        const end = l.bars[l.bars.length - 1];
+        const ex = xAt(parseTs(end) + stepMs / 2);
+        const ey = oY(end.close);
+        ctx.fillStyle = l.color;
         ctx.beginPath();
-        ctx.arc(end.x, end.y, 3.5, 0, Math.PI * 2);
+        ctx.arc(ex, ey, 3, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillText(end.v.toFixed(3), 8, end.y + 4);
+        endLabels.push({y: ey, color: l.color, text: `${keyLabel(l.key)} ${fmt(end.close, 2)}`});
+      });
+      // Keep end-of-line labels from stacking on top of each other.
+      endLabels.sort((a, b) => a.y - b.y);
+      for (let i = 1; i < endLabels.length; i++) {
+        if (endLabels[i].y < endLabels[i - 1].y + 13) endLabels[i].y = endLabels[i - 1].y + 13;
       }
+      for (let i = endLabels.length - 1; i >= 0; i--) {
+        endLabels[i].y = Math.min(endLabels[i].y, cssH - padB - 4 - (endLabels.length - 1 - i) * 13);
+      }
+      endLabels.forEach((lbl) => {
+        ctx.fillStyle = lbl.color;
+        ctx.fillText(lbl.text, cssW - padR + 6, lbl.y + 4);
+      });
+    }
+
+    // ---- option picker -------------------------------------------------
+    const PICK_KEY = "optionsignal.picks";
+    let picks = [];
+    try { picks = JSON.parse(localStorage.getItem(PICK_KEY) || "[]").filter(k => /^[0-9.]+[CP]$/.test(k)).slice(0, 6); } catch { picks = []; }
+    let optionSeries = {};
+    let seriesBusy = false;
+    let strikeList = [];
+    let chainAtmStrike = null;
+
+    const selectedKeys = () => picks;
+    const keyLabel = (key) => {
+      const m = /^([0-9.]+)([CP])$/.exec(key);
+      if (!m) return key;
+      return `${fmt(Number(m[1]), 2)} ${m[2] === "C" ? "콜" : "풋"}`;
+    };
+    const savePicks = () => { try { localStorage.setItem(PICK_KEY, JSON.stringify(picks)); } catch {} };
+
+    function addPick(key) {
+      if (!key || picks.includes(key)) return;
+      if (picks.length >= 6) { picks.shift(); }
+      picks.push(key);
+      savePicks();
+      paintPicks();
+      fetchSeries(true);
+    }
+    function removePick(key) {
+      picks = picks.filter(k => k !== key);
+      delete optionSeries[key];
+      savePicks();
+      paintPicks();
+      drawChart(points);
+    }
+
+    function paintPicks() {
+      const chips = $("pickChips");
+      if (!picks.length) {
+        chips.innerHTML = `<span class="meta">선택한 옵션이 없습니다. 위에서 행사가와 콜/풋을 고르고 추가하세요. 최대 6개.</span>`;
+      } else {
+        chips.innerHTML = picks.map((k, i) => `<span class="chip"><i style="background:${OPTION_COLORS[i % OPTION_COLORS.length]}"></i>${keyLabel(k)}<button type="button" data-key="${k}" title="제거">×</button></span>`).join("");
+        chips.querySelectorAll("button[data-key]").forEach(btn => { btn.onclick = () => removePick(btn.dataset.key); });
+      }
+      $("pickTableCard").style.display = picks.length ? "" : "none";
+      paintPickTable();
+    }
+
+    function paintPickTable() {
+      if (!picks.length) return;
+      $("pickDeltaHead").textContent = tfMinutes === 1 ? "Δ1m" : "Δ5m";
+      $("pickRows").innerHTML = picks.map((k, i) => {
+        const s = optionSeries[k];
+        const latest = s && s.latest;
+        const bars = s ? optionBarsForTf(s.bars || [], tfMinutes) : [];
+        const last = bars[bars.length - 1];
+        const prev = bars[bars.length - 2];
+        const d1 = last && prev ? last.close - prev.close : null;
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        const older = bars.filter(b => parseTs(b) <= cutoff);
+        const d30 = last && older.length ? last.close - older[older.length - 1].close : null;
+        const color = OPTION_COLORS[i % OPTION_COLORS.length];
+        const dcls = (v) => v == null ? "" : v > 0 ? "call" : v < 0 ? "put" : "";
+        return `<tr>
+          <td><span style="background:${color};display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px"></span>${keyLabel(k)}</td>
+          <td><b>${latest ? fmt(latest.price, 2) : "—"}</b></td>
+          <td class="call">${latest ? fmt(latest.bid, 2) : "—"}</td>
+          <td class="put">${latest ? fmt(latest.ask, 2) : "—"}</td>
+          <td>${latest && latest.last != null ? fmt(latest.last, 2) : "—"}</td>
+          <td>${latest ? fmt(latest.volume, 0) : "—"}</td>
+          <td class="${dcls(d1)}">${d1 == null ? "—" : signed(d1, 2)}</td>
+          <td class="${dcls(d30)}">${d30 == null ? "—" : signed(d30, 2)}</td>
+          <td><button type="button" data-key="${k}" style="padding:2px 8px">제거</button></td>
+        </tr>`;
+      }).join("");
+      $("pickRows").querySelectorAll("button[data-key]").forEach(btn => { btn.onclick = () => removePick(btn.dataset.key); });
+    }
+
+    async function fetchSeries(force) {
+      if (!picks.length) return;
+      if (seriesBusy && !force) return;
+      seriesBusy = true;
+      try {
+        const res = await fetch(`/api/option_series?keys=${encodeURIComponent(picks.join(","))}&tf=1`);
+        const data = await res.json();
+        optionSeries = data.series || {};
+        paintPickTable();
+        if (activePanel === "boardPanel") drawChart(points);
+      } catch (e) { /* keep the previous series */ }
+      finally { seriesBusy = false; }
+    }
+
+    function paintStrikeOptions(data) {
+      if (!data || !(data.rows || []).length) return;
+      strikeList = data.rows.map(r => r.strike);
+      chainAtmStrike = data.atm;
+      const sel = $("pickStrike");
+      const current = sel.value;
+      const spot = data.spot;
+      sel.innerHTML = `<option value="">행사가…</option>` + strikeList.map(s => {
+        const tag = s === data.atm ? " · ATM" : (spot != null ? ` (${s > spot ? "+" : ""}${fmt(s - spot, 0)})` : "");
+        return `<option value="${s}">${fmt(s, 2)}${tag}</option>`;
+      }).join("");
+      if (current && strikeList.some(s => String(s) === current)) sel.value = current;
+      else if (data.atm != null) sel.value = String(data.atm);
+    }
+
+    $("pickAdd").onclick = () => {
+      const strike = $("pickStrike").value;
+      if (!strike) return;
+      addPick(`${Number(strike)}${$("pickRight").value}`);
+    };
+    $("pickAtm").onclick = () => {
+      if (chainAtmStrike == null) return;
+      addPick(`${Number(chainAtmStrike)}C`);
+      addPick(`${Number(chainAtmStrike)}P`);
+    };
+
+    let strikesLoaded = false;
+    async function refreshStrikes() {
+      try {
+        const res = await fetch("/api/chain");
+        const data = await res.json();
+        chainData = data;
+        paintStrikeOptions(data);
+        if (activePanel === "chainPanel") paintChain(data);
+        strikesLoaded = !!(data.rows || []).length;
+      } catch (e) { /* retry on the next tick */ }
     }
 
     function apply(payload) {
@@ -727,7 +966,12 @@
         $("chartHint").textContent = chartHint();
       }
       paintStatus(payload.status);
-      if (activePanel === "chainPanel" && (payload.event === "tick" || payload.tick)) fetchChain();
+      const isTick = payload.event === "tick" || payload.tick;
+      if (isTick) {
+        if (activePanel === "chainPanel") fetchChain();
+        else if (!strikesLoaded || (payload.event === "tick" && Math.random() < 0.2)) refreshStrikes();
+        fetchSeries(false);
+      }
     }
 
     async function fetchLive() {
@@ -798,7 +1042,9 @@
       $("tf1").classList.toggle("active", tfMinutes === 1);
       $("tf5").classList.toggle("active", tfMinutes === 5);
       paintTape(points);
+      paintPickTable();
       drawChart(points);
+      $("chartHint").textContent = chartHint();
     }
 
     function setHours(hours, fromSlider) {
@@ -852,6 +1098,8 @@
         const res = await fetch("/api/chain");
         chainData = await res.json();
         paintChain(chainData);
+        paintStrikeOptions(chainData);
+        strikesLoaded = !!(chainData.rows || []).length;
       } catch (e) {
         $("chainMeta").innerHTML = `<span class="error">체인 조회 실패</span>`;
       } finally {
@@ -932,7 +1180,10 @@
     $("chainAtm").onclick = () => { chainScrolled = false; scrollChainToAtm(); };
 
     if (location.hash === "#chain") setPanel("chainPanel");
+    paintPicks();
     fetchLive();
+    refreshStrikes();
+    fetchSeries(true);
     connect();
   </script>
 </body>

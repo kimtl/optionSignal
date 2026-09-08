@@ -107,6 +107,15 @@ def create_app(
     def api_chain():
         return _hub().chain_payload()
 
+    @app.get("/api/option_series")
+    def api_option_series(
+        keys: str = Query(default="", description="comma-separated, e.g. 24700C,24650P"),
+        tf: int = Query(default=1, ge=1, le=60),
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+    ):
+        wanted = [k.strip().upper() for k in keys.split(",") if k.strip()]
+        return _hub().option_series(wanted, tf=tf, limit=limit)
+
     @app.get("/api/minutes")
     def api_minutes(
         limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),

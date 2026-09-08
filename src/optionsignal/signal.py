@@ -190,19 +190,24 @@ def _side(quote: OptionQuote, spot: float, t: float) -> dict:
     }
 
 
-def chain_table(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE) -> dict:
-    """Raw call/put quotes per strike for the nearest expiry within max_dte (0DTE by default)."""
+def front_expiry_quotes(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE):
+    """(expiry, quotes) for the nearest expiry within max_dte, else the nearest living one."""
     now = chain.asof if chain.asof.tzinfo else chain.asof.replace(tzinfo=NY)
     grouped = _group_by_expiry(chain.quotes)
-    expiry = None
     for candidate in grouped:
         dte = _dte(candidate, now)
         if 0 <= dte <= max_dte:
-            expiry = candidate
-            break
-    if expiry is None:
-        living = [e for e in grouped if _dte(e, now) >= 0]
-        expiry = living[0] if living else None
+            return candidate, grouped[candidate]
+    living = [e for e in grouped if _dte(e, now) >= 0]
+    if living:
+        return living[0], grouped[living[0]]
+    return None, []
+
+
+def chain_table(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE) -> dict:
+    """Raw call/put quotes per strike for the nearest expiry within max_dte (0DTE by default)."""
+    now = chain.asof if chain.asof.tzinfo else chain.asof.replace(tzinfo=NY)
+    expiry, quotes = front_expiry_quotes(chain, max_dte)
     base = {
         "symbol": chain.symbol,
         "spot": chain.spot,
@@ -217,7 +222,6 @@ def chain_table(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE) -> dict
     }
     if expiry is None:
         return base
-    quotes = grouped[expiry]
     t = year_fraction(expiry, now=now)
     by_strike: dict[float, dict] = {}
     for quote in quotes:
