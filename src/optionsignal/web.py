@@ -15,7 +15,7 @@ from .collector import DEFAULT_INTERVAL, LiveHub
 from .fetch import DEFAULT_SYMBOL
 from .settings import default_interval, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
-from .store import compact_point, load_history
+from .store import BAR_HISTORY_LIMIT, RAW_HISTORY_LIMIT, aggregate_bars, compact_point, load_history
 
 log = logging.getLogger("optionsignal")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -102,15 +102,19 @@ def create_app(
         return hub.latest
 
     @app.get("/api/minutes")
-    def api_minutes(limit: int = Query(default=240, ge=10, le=2000)):
+    def api_minutes(
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+        tf: int = Query(default=1, ge=1, le=60),
+    ):
         hub = _hub()
-        points = [compact_point(item) for item in load_history(hub.symbol, limit=limit)]
-        return {"symbol": hub.symbol, "points": points}
+        raw = load_history(hub.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
+        bars = aggregate_bars(raw, minutes=tf)
+        return {"symbol": hub.symbol, "tf": tf, "points": [compact_point(item) for item in bars[-limit:]]}
 
     @app.get("/api/history")
-    def api_history(limit: int = Query(default=240, ge=1, le=2000)):
+    def api_history(limit: int = Query(default=BAR_HISTORY_LIMIT, ge=1, le=RAW_HISTORY_LIMIT)):
         hub = _hub()
-        return JSONResponse(load_history(hub.symbol, limit=limit))
+        return JSONResponse(load_history(hub.symbol.lstrip("/"), limit=limit))
 
     @app.get("/api/status")
     def api_status():

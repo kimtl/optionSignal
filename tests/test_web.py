@@ -35,6 +35,8 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         home = client.get("/")
         assert home.status_code == 200
         assert "LIVE" in home.text
+        assert "1분봉" in home.text
+        assert "12시간" in home.text
         first = client.post("/api/tick")
         assert first.status_code == 200
         body = first.json()
@@ -54,6 +56,9 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         minutes = client.get("/api/minutes")
         assert minutes.status_code == 200
         assert len(minutes.json()["points"]) >= 1
+        five = client.get("/api/minutes?tf=5")
+        assert five.status_code == 200
+        assert five.json()["tf"] == 5
         status = client.get("/api/status")
         assert status.status_code == 200
         assert status.json()["interval"] == 60
@@ -87,6 +92,21 @@ def test_tick_nq_without_tasty_is_config_error(tmp_path, monkeypatch):
         live = client.get("/api/live")
         assert live.status_code == 200
         assert live.json()["status"]["error"]
+
+
+def test_minutes_endpoint_strips_futures_slash(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    from optionsignal.store import save_snapshot
+
+    save_snapshot({"symbol": "NQ", "asof": "2026-09-08T10:01:00-04:00", "headline_cppi": 0.2, "futures_price": 24700})
+    app = create_app(symbol="/NQ", start_collector=False, interval=5)
+    with TestClient(app) as client:
+        res = client.get("/api/minutes?tf=5")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["tf"] == 5
+        assert len(body["points"]) == 1
+        assert body["points"][0]["nq_close"] == 24700
 
 
 def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):

@@ -10,7 +10,7 @@ from typing import Any, Callable
 from .fetch import DEFAULT_SYMBOL, fetch_chain
 from .settings import default_interval, public_url, tasty_configured
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report, with_deltas, yahoo_session_status
-from .store import compact_point, load_history, save_snapshot
+from .store import RAW_HISTORY_LIMIT, BAR_HISTORY_LIMIT, aggregate_bars, compact_point, load_history, save_snapshot
 from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
 
 log = logging.getLogger("optionsignal")
@@ -108,7 +108,9 @@ class LiveHub:
         }
 
     def live_payload(self) -> dict:
-        points = [compact_point(item) for item in load_history(self.symbol.lstrip("/"), limit=240)]
+        raw = load_history(self.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
+        bars = aggregate_bars(raw, minutes=1)
+        points = [compact_point(item) for item in bars[-BAR_HISTORY_LIMIT:]]
         return {
             "tick": self.latest,
             "points": points,
