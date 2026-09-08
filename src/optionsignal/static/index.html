@@ -79,7 +79,30 @@
     .summary { font-size: 15px; line-height: 1.45; margin: 8px 0; }
     .meta { color: var(--muted); font-size: 12px; }
     .error { color: var(--put); }
-    canvas { width: 100%; height: 220px; display: block; }
+    canvas { width: 100%; height: 260px; display: block; cursor: ns-resize; }
+    .chart-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .chart-head .label { margin: 0; }
+    .tf-group { display: flex; gap: 4px; }
+    .tf-group button, .scale-group button {
+      padding: 5px 9px;
+      font-size: 12px;
+    }
+    .tf-group button.active, .scale-group button.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .scale-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    #scale {
+      width: 120px;
+      accent-color: var(--accent);
+    }
     details { color: var(--muted); font-size: 13px; line-height: 1.55; }
     details summary { cursor: pointer; color: var(--text); margin-bottom: 8px; }
     .flash { animation: pulse 0.8s ease; }
@@ -143,14 +166,30 @@
     </section>
     <section class="wide">
       <article class="card">
-        <div class="label">분봉 CPPI</div>
-        <canvas id="chart" height="220"></canvas>
-        <p class="meta">위가 콜 우세(+), 아래가 풋 우세(−). 점 하나는 1분입니다.</p>
+        <div class="chart-head">
+          <div class="label">CPPI 차트</div>
+          <div class="controls">
+            <div class="tf-group">
+              <button type="button" id="tf1" class="active" data-tf="1">1분봉</button>
+              <button type="button" id="tf5" data-tf="5">5분봉</button>
+            </div>
+            <div class="scale-group">
+              <button type="button" data-hours="0.5">30분</button>
+              <button type="button" data-hours="1" class="active">1시간</button>
+              <button type="button" data-hours="4">4시간</button>
+              <button type="button" data-hours="12">12시간</button>
+              <input id="scale" type="range" min="0.5" max="12" step="0.5" value="1" />
+              <span class="meta" id="scaleLabel">1시간</span>
+            </div>
+          </div>
+        </div>
+        <canvas id="chart" height="260"></canvas>
+        <p class="meta" id="chartHint">위가 콜 우세(+), 아래가 풋 우세(−). 차트에서 휠로 확대/축소 · 최대 12시간.</p>
       </article>
       <article class="card">
         <div class="label">최근 분봉 테이프</div>
         <table>
-          <thead><tr><th>분</th><th>CPPI</th><th>Δ1m</th><th>콜Δ</th><th>풋Δ</th></tr></thead>
+          <thead><tr><th>봉</th><th>CPPI</th><th id="tapeDeltaHead">Δ</th><th>콜Δ</th><th>풋Δ</th></tr></thead>
           <tbody id="tape"></tbody>
         </table>
       </article>
@@ -184,11 +223,91 @@
     let points = [];
     let nextAt = 0;
     let intervalSec = 60;
+    let tfMinutes = 1;
+    let chartHours = 1;
 
     function clock(ts) {
       if (!ts) return "—";
       const d = new Date(ts);
       return d.toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+    }
+
+    function hoursLabel(hours) {
+      if (hours < 1) return `${Math.round(hours * 60)}분`;
+      if (hours === Math.floor(hours)) return `${hours}시간`;
+      return `${hours}시간`;
+    }
+
+    function parseTs(p) {
+      const raw = p && (p.asof || p.stored_at);
+      if (!raw) return null;
+      const t = Date.parse(raw);
+      return Number.isNaN(t) ? null : t;
+    }
+
+    function floorBar(ts, minutes) {
+      const ms = minutes * 60 * 1000;
+      return Math.floor(ts / ms) * ms;
+    }
+
+    function barsForTf(list, minutes) {
+      const buckets = new Map();
+      for (const p of list || []) {
+        const ts = parseTs(p);
+        const close = p.close ?? p.headline_cppi;
+        if (ts == null || close == null) continue;
+        const key = floorBar(ts, minutes);
+        const high = p.high ?? close;
+        const low = p.low ?? close;
+        const open = p.open ?? close;
+        const callP = p.headline_call_premium || 0;
+        const putP = p.headline_put_premium || 0;
+        const prev = buckets.get(key);
+        if (!prev) {
+          buckets.set(key, {
+            asof: new Date(key).toISOString(),
+            stored_at: p.stored_at,
+            open,
+            high,
+            low,
+            close,
+            headline_cppi: close,
+            headline_call_premium: callP,
+            headline_put_premium: putP,
+            _firstCall: callP,
+            _firstPut: putP,
+          });
+          continue;
+        }
+        prev.high = Math.max(prev.high, high);
+        prev.low = Math.min(prev.low, low);
+        prev.close = close;
+        prev.headline_cppi = close;
+        prev.headline_call_premium = callP;
+        prev.headline_put_premium = putP;
+      }
+      const out = [];
+      let prevClose = null;
+      for (const bar of buckets.values()) {
+        bar.call_premium_delta_1m = bar.headline_call_premium - bar._firstCall;
+        bar.put_premium_delta_1m = bar.headline_put_premium - bar._firstPut;
+        bar.cppi_delta_1m = prevClose == null ? null : bar.close - prevClose;
+        prevClose = bar.close;
+        delete bar._firstCall;
+        delete bar._firstPut;
+        out.push(bar);
+      }
+      return out;
+    }
+
+    function chartBars() {
+      const bars = tfMinutes === 1 ? points : barsForTf(points, 5);
+      const cutoff = Date.now() - chartHours * 3600 * 1000;
+      const visible = bars.filter(p => {
+        const t = parseTs(p);
+        return t == null || t >= cutoff;
+      });
+      return visible.length ? visible : bars.slice(-2);
     }
 
     function paintTick(tick) {
@@ -240,9 +359,11 @@
     }
 
     function paintTape(list) {
-      const rows = [...list].reverse().slice(0, 16);
+      const bars = tfMinutes === 1 ? list : barsForTf(list, 5);
+      $("tapeDeltaHead").textContent = tfMinutes === 1 ? "Δ1m" : "Δ5m";
+      const rows = [...bars].reverse().slice(0, 16);
       $("tape").innerHTML = rows.map(p => {
-        const t = (p.asof || p.stored_at || "").slice(11, 16);
+        const t = clock(p.asof || p.stored_at).slice(0, 5);
         return `<tr>
           <td>${t || "—"}</td>
           <td class="${tone(p.headline_cppi)}">${p.headline_cppi == null ? "—" : p.headline_cppi.toFixed(3)}</td>
@@ -250,7 +371,7 @@
           <td class="call">${fmt(p.call_premium_delta_1m, 0)}</td>
           <td class="put">${fmt(p.put_premium_delta_1m, 0)}</td>
         </tr>`;
-      }).join("") || `<tr><td colspan="5">분봉이 쌓이면 여기에 1분씩 표시됩니다.</td></tr>`;
+      }).join("") || `<tr><td colspan="5">분봉이 쌓이면 여기에 ${tfMinutes}분씩 표시됩니다.</td></tr>`;
     }
 
     function paintStatus(status) {
@@ -300,38 +421,76 @@
       const canvas = $("chart");
       const dpr = window.devicePixelRatio || 1;
       const cssW = canvas.clientWidth || 640;
-      const cssH = 220;
+      const cssH = 260;
       canvas.width = cssW * dpr;
       canvas.height = cssH * dpr;
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
+      const bars = chartBars();
+      const padL = 44;
+      const padR = 12;
+      const padT = 14;
+      const padB = 28;
       ctx.strokeStyle = "#223040";
       ctx.beginPath();
-      ctx.moveTo(8, cssH / 2);
-      ctx.lineTo(cssW - 8, cssH / 2);
+      ctx.moveTo(padL, padT);
+      ctx.lineTo(padL, cssH - padB);
+      ctx.lineTo(cssW - padR, cssH - padB);
       ctx.stroke();
-      const vals = list.map(p => p.headline_cppi).filter(v => v != null);
-      if (vals.length < 2) {
+      const highs = bars.map(p => p.high ?? p.headline_cppi).filter(v => v != null);
+      const lows = bars.map(p => p.low ?? p.headline_cppi).filter(v => v != null);
+      if (highs.length < 1) {
         ctx.fillStyle = "#89a0b5";
         ctx.font = "13px sans-serif";
-        ctx.fillText("분봉이 2개 이상이면 선이 그려집니다.", 16, cssH / 2 - 12);
+        ctx.fillText("분봉이 쌓이면 차트가 그려집니다.", 16, cssH / 2 - 12);
         return;
       }
-      const min = Math.min(-0.3, ...vals);
-      const max = Math.max(0.3, ...vals);
+      const min = Math.min(-0.3, ...lows);
+      const max = Math.max(0.3, ...highs);
       const span = max - min || 1;
-      const pad = 16;
+      const yAt = (v) => padT + (max - v) / span * (cssH - padT - padB);
+      ctx.strokeStyle = "#223040";
       ctx.beginPath();
-      list.forEach((p, i) => {
-        if (p.headline_cppi == null) return;
-        const x = pad + i * (cssW - pad * 2) / Math.max(list.length - 1, 1);
-        const y = pad + (max - p.headline_cppi) / span * (cssH - pad * 2);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = "#7cb8ff";
-      ctx.lineWidth = 2;
+      ctx.moveTo(padL, yAt(0));
+      ctx.lineTo(cssW - padR, yAt(0));
       ctx.stroke();
+      ctx.fillStyle = "#89a0b5";
+      ctx.font = "11px sans-serif";
+      ctx.fillText("0", 8, yAt(0) + 4);
+      ctx.fillText(max.toFixed(2), 8, padT + 10);
+      ctx.fillText(min.toFixed(2), 8, cssH - padB);
+      const n = bars.length;
+      const slot = (cssW - padL - padR) / Math.max(n, 1);
+      const bodyW = Math.max(2, Math.min(14, slot * 0.7));
+      bars.forEach((p, i) => {
+        const close = p.close ?? p.headline_cppi;
+        const open = p.open ?? close;
+        const high = p.high ?? close;
+        const low = p.low ?? close;
+        if (close == null) return;
+        const x = padL + slot * (i + 0.5);
+        const up = close >= open;
+        ctx.strokeStyle = up ? "#3dd68c" : "#ff5d73";
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.beginPath();
+        ctx.moveTo(x, yAt(high));
+        ctx.lineTo(x, yAt(low));
+        ctx.stroke();
+        const top = yAt(Math.max(open, close));
+        const bot = yAt(Math.min(open, close));
+        const h = Math.max(1, bot - top);
+        ctx.fillRect(x - bodyW / 2, top, bodyW, h);
+      });
+      const first = bars[0];
+      const last = bars[bars.length - 1];
+      ctx.fillStyle = "#89a0b5";
+      ctx.font = "11px sans-serif";
+      if (first) ctx.fillText(clock(first.asof || first.stored_at).slice(0, 5), padL, cssH - 8);
+      if (last && n > 1) {
+        const label = clock(last.asof || last.stored_at).slice(0, 5);
+        ctx.fillText(label, cssW - padR - ctx.measureText(label).width, cssH - 8);
+      }
     }
 
     function apply(payload) {
@@ -341,6 +500,7 @@
         points = payload.points;
         paintTape(points);
         drawChart(points);
+        $("chartHint").textContent = `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 위가 콜 우세(+) · 휠로 최대 12시간`;
       }
       paintStatus(payload.status);
     }
@@ -403,6 +563,37 @@
       const left = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
       $("countdown").textContent = `다음 갱신 ${left}s`;
     }, 500);
+    function setTf(minutes) {
+      tfMinutes = minutes === 5 ? 5 : 1;
+      $("tf1").classList.toggle("active", tfMinutes === 1);
+      $("tf5").classList.toggle("active", tfMinutes === 5);
+      paintTape(points);
+      drawChart(points);
+    }
+
+    function setHours(hours, fromSlider) {
+      chartHours = Math.min(12, Math.max(0.5, Number(hours) || 1));
+      $("scale").value = String(chartHours);
+      $("scaleLabel").textContent = hoursLabel(chartHours);
+      document.querySelectorAll(".scale-group button[data-hours]").forEach(btn => {
+        btn.classList.toggle("active", Number(btn.dataset.hours) === chartHours);
+      });
+      if (!fromSlider) $("scale").value = String(chartHours);
+      drawChart(points);
+      $("chartHint").textContent = `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 위가 콜 우세(+) · 휠로 최대 12시간`;
+    }
+
+    $("tf1").onclick = () => setTf(1);
+    $("tf5").onclick = () => setTf(5);
+    document.querySelectorAll(".scale-group button[data-hours]").forEach(btn => {
+      btn.onclick = () => setHours(btn.dataset.hours);
+    });
+    $("scale").oninput = (ev) => setHours(ev.target.value, true);
+    $("chart").addEventListener("wheel", (ev) => {
+      ev.preventDefault();
+      const next = chartHours * (ev.deltaY > 0 ? 1.2 : 0.8);
+      setHours(Math.round(next * 2) / 2);
+    }, {passive: false});
     window.addEventListener("resize", () => drawChart(points));
     fetchLive();
     connect();

@@ -35,6 +35,8 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         home = client.get("/")
         assert home.status_code == 200
         assert "LIVE" in home.text
+        assert "1분봉" in home.text
+        assert "12시간" in home.text
         first = client.post("/api/tick")
         assert first.status_code == 200
         body = first.json()
@@ -54,6 +56,9 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         minutes = client.get("/api/minutes")
         assert minutes.status_code == 200
         assert len(minutes.json()["points"]) >= 1
+        five = client.get("/api/minutes?tf=5")
+        assert five.status_code == 200
+        assert five.json()["tf"] == 5
         status = client.get("/api/status")
         assert status.status_code == 200
         assert status.json()["interval"] == 60

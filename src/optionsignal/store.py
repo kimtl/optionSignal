@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import SignalReport
 from .settings import db_path
 
 DEFAULT_DB = Path("data/optionsignal.db")
+CHART_HOURS = 12
+RAW_HISTORY_LIMIT = CHART_HOURS * 720 + 240  # 12h of 5s ticks, plus a little
+BAR_HISTORY_LIMIT = CHART_HOURS * 60  # 1-minute bars
 
 
 def _resolve_db(path: Path | None = None) -> Path:
@@ -81,6 +84,9 @@ def save_snapshot(report: SignalReport | dict, path: Path | None = None) -> int:
             "INSERT INTO ticks (ts, minute, symbol, payload) VALUES (?, ?, ?, ?)",
             (ts, minute_key(now), symbol, payload),
         )
+        cutoff = (now - timedelta(hours=CHART_HOURS + 1)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM ticks WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM snapshots WHERE ts < ?", (cutoff,))
         conn.commit()
         return int(cursor.lastrowid)
 
@@ -94,7 +100,7 @@ def _rows_to_history(rows: list[tuple[str, str]]) -> list[dict]:
     return history
 
 
-def load_history(symbol: str, limit: int = 240, path: Path | None = None) -> list[dict]:
+def load_history(symbol: str, limit: int = RAW_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
     symbol = symbol.upper().lstrip("^")
     with _connect(path) as conn:
         tick_count = conn.execute("SELECT COUNT(*) FROM ticks WHERE symbol = ?", (symbol,)).fetchone()[0]
@@ -139,4 +145,87 @@ def compact_point(item: dict) -> dict:
         "flow_1m": item.get("flow_1m"),
         "bias": item.get("bias"),
         "score": item.get("score"),
+        "open": item.get("open"),
+        "high": item.get("high"),
+        "low": item.get("low"),
+        "close": item.get("close"),
     }
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def floor_bar_time(ts: datetime, minutes: int) -> datetime:
+    minutes = max(1, int(minutes))
+    ts = ts.replace(second=0, microsecond=0)
+    extra = ts.minute % minutes
+    if extra:
+        ts = ts - timedelta(minutes=extra)
+    return ts
+
+
+def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
+    """Bucket ticks (or smaller bars) into 1m/5m CPPI candles."""
+    minutes = max(1, int(minutes))
+    buckets: dict[str, dict] = {}
+    order: list[str] = []
+    for point in points:
+        ts = _parse_ts(point.get("asof") or point.get("stored_at"))
+        close = point.get("close")
+        if close is None:
+            close = point.get("headline_cppi")
+        if ts is None or close is None:
+            continue
+        close = float(close)
+        high = float(point.get("high") if point.get("high") is not None else close)
+        low = float(point.get("low") if point.get("low") is not None else close)
+        open_ = float(point.get("open") if point.get("open") is not None else close)
+        key_dt = floor_bar_time(ts, minutes)
+        key = key_dt.isoformat()
+        call_prem = float(point.get("headline_call_premium") or 0)
+        put_prem = float(point.get("headline_put_premium") or 0)
+        if key not in buckets:
+            buckets[key] = {
+                "asof": key_dt.isoformat(timespec="seconds"),
+                "stored_at": point.get("stored_at"),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "headline_cppi": close,
+                "headline_call_premium": call_prem,
+                "headline_put_premium": put_prem,
+                "_first_call": call_prem,
+                "_first_put": put_prem,
+            }
+            order.append(key)
+            continue
+        bar = buckets[key]
+        bar["high"] = max(bar["high"], high)
+        bar["low"] = min(bar["low"], low)
+        bar["close"] = close
+        bar["headline_cppi"] = close
+        bar["headline_call_premium"] = call_prem
+        bar["headline_put_premium"] = put_prem
+        bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
+    out: list[dict] = []
+    prev_close = None
+    for key in order:
+        bar = buckets[key]
+        bar["call_premium_delta_1m"] = bar["headline_call_premium"] - bar["_first_call"]
+        bar["put_premium_delta_1m"] = bar["headline_put_premium"] - bar["_first_put"]
+        bar["cppi_delta_1m"] = None if prev_close is None else bar["close"] - prev_close
+        prev_close = bar["close"]
+        bar.pop("_first_call", None)
+        bar.pop("_first_put", None)
+        out.append(bar)
+    return out
