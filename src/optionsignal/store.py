@@ -26,7 +26,7 @@ def _resolve_db(path: Path | None = None) -> Path:
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     path = _resolve_db(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -59,7 +59,112 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_ts ON ticks(symbol, ts)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS option_ticks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            key TEXT NOT NULL,
+            expiry TEXT,
+            mid REAL,
+            bid REAL,
+            ask REAL,
+            last REAL,
+            volume INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_option_ticks_symbol_key_ts ON option_ticks(symbol, key, ts)"
+    )
     return conn
+
+
+def option_key(strike: float, right: str) -> str:
+    """'24700C' / '24700P' / '480.5P' — stable id for one contract within the 0DTE chain."""
+    text = f"{float(strike):g}"
+    return f"{text}{'C' if str(right).lower().startswith('c') else 'P'}"
+
+
+def save_option_ticks(symbol: str, quotes, path: Path | None = None, now: datetime | None = None) -> int:
+    """Store one price row per contract so any option can be charted after the fact."""
+    now = now or datetime.now(timezone.utc)
+    ts = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    rows = []
+    for q in quotes:
+        mid = getattr(q, "mid", None)
+        if mid is None or mid <= 0:
+            continue
+        rows.append((
+            ts, symbol, option_key(q.strike, q.right), q.expiry.isoformat(),
+            float(mid), getattr(q, "bid", None), getattr(q, "ask", None), getattr(q, "last", None),
+            int(getattr(q, "volume", 0) or 0),
+        ))
+    if not rows:
+        return 0
+    with _connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO option_ticks (ts, symbol, key, expiry, mid, bid, ask, last, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        cutoff = (now - timedelta(hours=CHART_HOURS + 1)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM option_ticks WHERE ts < ?", (cutoff,))
+        conn.commit()
+    return len(rows)
+
+
+def load_option_series(symbol: str, key: str, limit: int = RAW_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, mid, bid, ask, last, volume FROM option_ticks
+            WHERE symbol = ? AND key = ?
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (symbol, key, limit),
+        ).fetchall()
+    out = []
+    for ts, mid, bid, ask, last, volume in reversed(rows):
+        out.append({"asof": ts, "price": mid, "bid": bid, "ask": ask, "last": last, "volume": volume or 0})
+    return out
+
+
+def price_bars(points: list[dict], minutes: int = 1, value: str = "price") -> list[dict]:
+    """Generic OHLC buckets for a plain price series (option mids)."""
+    minutes = max(1, int(minutes))
+    buckets: dict[str, dict] = {}
+    order: list[str] = []
+    for point in points:
+        ts = _parse_ts(point.get("asof") or point.get("stored_at"))
+        px = point.get(value)
+        if px is None:
+            px = point.get("close")
+        if ts is None or px is None:
+            continue
+        px = float(px)
+        high = float(point["high"]) if point.get("high") is not None else px
+        low = float(point["low"]) if point.get("low") is not None else px
+        open_ = float(point["open"]) if point.get("open") is not None else px
+        key_dt = floor_bar_time(ts, minutes)
+        key = key_dt.isoformat()
+        vol = int(point.get("volume") or 0)
+        bar = buckets.get(key)
+        if bar is None:
+            buckets[key] = {
+                "asof": key_dt.isoformat(timespec="seconds"),
+                "open": open_, "high": high, "low": low, "close": px, "volume": vol,
+            }
+            order.append(key)
+            continue
+        bar["high"] = max(bar["high"], high)
+        bar["low"] = min(bar["low"], low)
+        bar["close"] = px
+        bar["volume"] = max(bar["volume"], vol)
+    return [buckets[k] for k in order]
 
 
 def minute_key(ts: datetime | None = None) -> str:

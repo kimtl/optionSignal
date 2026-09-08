@@ -89,3 +89,28 @@ def test_aggregate_bars_carries_nq_ohlc():
     assert five[0]["nq_high"] == 24760
     assert five[0]["nq_low"] == 24680
     assert five[0]["nq_close"] == 24720
+
+
+def test_option_ticks_roundtrip_and_bars(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from optionsignal.store import load_option_series, option_key, price_bars, save_option_ticks
+    from tests.test_metrics import quote
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    assert option_key(24700, "call") == "24700C"
+    assert option_key(480.5, "put") == "480.5P"
+    base = datetime(2026, 9, 8, 14, 0, 5, tzinfo=timezone.utc)
+    prices = [40.0, 42.5, 39.0, 41.0, 45.0]
+    for i, px in enumerate(prices):
+        ts = base.replace(second=5 + 20 * (i % 3), minute=i // 3)
+        n = save_option_ticks("/NQ", [quote("call", 24700, px, volume=100 + i), quote("put", 24700, 30.0)], now=ts)
+        assert n == 2
+    series = load_option_series("NQ", "24700C")
+    assert [p["price"] for p in series] == prices
+    assert series[-1]["volume"] == 104
+    bars = price_bars(series, minutes=1)
+    assert len(bars) == 2
+    assert bars[0]["open"] == 40.0 and bars[0]["high"] == 42.5 and bars[0]["low"] == 39.0 and bars[0]["close"] == 39.0
+    assert bars[1]["open"] == 41.0 and bars[1]["close"] == 45.0
+    assert load_option_series("NQ", "99999C") == []

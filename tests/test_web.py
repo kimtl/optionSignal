@@ -180,3 +180,32 @@ def test_chain_endpoint_returns_rows(monkeypatch, tmp_path):
         assert atm_row["call"]["volume"] == 80
         assert atm_row["put"]["open_interest"] == 40
         assert atm_row["call"]["delta"] is not None
+
+
+def test_option_series_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    state = {"mid": 1.2}
+    def chain(**kwargs):
+        c = _chain()
+        c.quotes = [q.__class__(**{**q.__dict__, "mid": state["mid"]}) if q.right == "call" and q.strike == 100 else q for q in c.quotes]
+        return c
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", chain)
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert 'id="pickStrike"' in home.text
+        assert 'id="pickChips"' in home.text
+        assert client.get("/api/option_series?keys=100C").json()["series"]["100C"]["bars"] == []
+        client.post("/api/tick")
+        state["mid"] = 1.5
+        client.post("/api/tick")
+        res = client.get("/api/option_series?keys=100C,100P,nope")
+        assert res.status_code == 200
+        series = res.json()["series"]
+        assert set(series) == {"100C", "100P", "NOPE"}
+        call = series["100C"]
+        assert call["latest"]["price"] == 1.5
+        assert call["bars"][-1]["close"] == 1.5
+        assert call["bars"][-1]["open"] == 1.2
+        assert series["100P"]["latest"]["price"] == 1.0
+        assert series["NOPE"]["bars"] == [] and series["NOPE"]["latest"] is None

@@ -14,10 +14,21 @@ from .signal import (
     DEFAULT_HEADLINE_DTE,
     build_report,
     chain_table,
+    front_expiry_quotes,
     with_deltas,
     yahoo_session_status,
 )
-from .store import RAW_HISTORY_LIMIT, BAR_HISTORY_LIMIT, aggregate_bars, compact_point, load_history, save_snapshot
+from .store import (
+    BAR_HISTORY_LIMIT,
+    RAW_HISTORY_LIMIT,
+    aggregate_bars,
+    compact_point,
+    load_history,
+    load_option_series,
+    price_bars,
+    save_option_ticks,
+    save_snapshot,
+)
 from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
 
 log = logging.getLogger("optionsignal")
@@ -129,6 +140,17 @@ class LiveHub:
             "status": self.status(),
         }
 
+    def option_series(self, keys: list[str], tf: int = 1, limit: int = BAR_HISTORY_LIMIT) -> dict:
+        """OHLC bars of the mid price for each requested contract key (e.g. 24700C)."""
+        symbol = self.symbol.lstrip("/").lstrip("^")
+        series = {}
+        for key in keys[:8]:
+            raw = load_option_series(symbol, key, limit=RAW_HISTORY_LIMIT)
+            bars = price_bars(raw, minutes=tf)
+            latest = raw[-1] if raw else None
+            series[key] = {"bars": bars[-limit:], "latest": latest}
+        return {"symbol": self.symbol, "tf": tf, "series": series}
+
     def chain_payload(self) -> dict:
         """Raw 0DTE call/put quotes for the chain tab. Uses the live cache when streaming."""
         chain = self.latest_chain
@@ -151,6 +173,11 @@ class LiveHub:
         )
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
+        _, front = front_expiry_quotes(chain, self.max_dte)
+        try:
+            save_option_ticks(chain.symbol, front)
+        except Exception:  # noqa: BLE001
+            log.exception("option tick save failed")
         self.latest = payload
         self.latest_chain = chain
         self.error = None
