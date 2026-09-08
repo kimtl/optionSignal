@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import math
+from collections.abc import Iterable
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
+
+from .models import OptionQuote, Right
+
+NY = ZoneInfo("America/New_York")
+
+# Index/ETF options can print absurd IVs on far OTM 0DTE quotes.
+IV_MIN = 0.03
+IV_MAX = 2.5
+
+
+def option_mid(bid: float | None, ask: float | None, last: float | None) -> float | None:
+    """Use the bid/ask midpoint when a real market exists, otherwise last."""
+    if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
+        return (bid + ask) / 2.0
+    if last is not None and last > 0:
+        return float(last)
+    return None
+
+
+def sane_iv(iv: float | None) -> float | None:
+    if iv is None or not math.isfinite(iv):
+        return None
+    if iv < IV_MIN or iv > IV_MAX:
+        return None
+    return float(iv)
+
+
+def year_fraction(expiry: date, now: datetime | None = None) -> float:
+    """Time to 4pm New York expiry, floored at 30 minutes so 0DTE greeks don't explode."""
+    now = now or datetime.now(tz=NY)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=NY)
+    now = now.astimezone(NY)
+    expiry_dt = datetime.combine(expiry, time(16, 0), tzinfo=NY)
+    seconds = (expiry_dt - now).total_seconds()
+    seconds = max(seconds, 30 * 60)
+    return seconds / (365.25 * 24 * 3600)
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def call_delta(spot: float, strike: float, t: float, sigma: float, rate: float = 0.0) -> float | None:
+    if spot <= 0 or strike <= 0 or t <= 0 or sigma is None or sigma <= 0:
+        return None
+    d1 = (math.log(spot / strike) + (rate + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    return _norm_cdf(d1)
+
+
+def call_put_premium_imbalance(call_premium: float, put_premium: float) -> float | None:
+    """(C - P) / (C + P). +1 = only calls, -1 = only puts, 0 = balanced."""
+    total = call_premium + put_premium
+    if total <= 0:
+        return None
+    return (call_premium - put_premium) / total
+
+
+def premium_ratio(call_premium: float, put_premium: float) -> float | None:
+    if put_premium <= 0:
+        return None if call_premium <= 0 else math.inf
+    return call_premium / put_premium
+
+
+def weighted_mean(values: Iterable[float], weights: Iterable[float]) -> float | None:
+    num = 0.0
+    den = 0.0
+    for value, weight in zip(values, weights, strict=True):
+        if weight <= 0 or not math.isfinite(value):
+            continue
+        num += value * weight
+        den += weight
+    if den <= 0:
+        return None
+    return num / den
+
+
+def in_moneyness_band(strike: float, spot: float, band: float) -> bool:
+    if spot <= 0:
+        return False
+    return (1.0 - band) * spot <= strike <= (1.0 + band) * spot
+
+
+def is_near_otm(quote: OptionQuote, spot: float, band: float) -> bool:
+    """Slightly OTM to ATM quotes in the band — where imminent-move demand shows up."""
+    if quote.mid is None or quote.mid <= 0:
+        return False
+    if not in_moneyness_band(quote.strike, spot, band):
+        return False
+    if quote.right == "call":
+        return quote.strike >= spot * 0.995
+    return quote.strike <= spot * 1.005
+
+
+def volume_premium(quotes: Iterable[OptionQuote]) -> float:
+    total = 0.0
+    for quote in quotes:
+        if quote.mid is None or quote.mid <= 0:
+            continue
+        total += quote.mid * max(quote.volume, 0)
+    return total
+
+
+def total_volume(quotes: Iterable[OptionQuote]) -> int:
+    return int(sum(max(q.volume, 0) for q in quotes))
+
+
+def volume_weighted_pct_change(quotes: Iterable[OptionQuote]) -> float | None:
+    values: list[float] = []
+    weights: list[float] = []
+    for quote in quotes:
+        if quote.percent_change is None or not math.isfinite(quote.percent_change):
+            continue
+        if quote.volume <= 0:
+            continue
+        values.append(quote.percent_change)
+        weights.append(float(quote.volume))
+    return weighted_mean(values, weights)
+
+
+def volume_weighted_iv(quotes: Iterable[OptionQuote]) -> float | None:
+    values: list[float] = []
+    weights: list[float] = []
+    for quote in quotes:
+        iv = sane_iv(quote.iv)
+        if iv is None:
+            continue
+        weight = float(quote.volume) if quote.volume > 0 else 0.0
+        # Fall back to open interest so a quiet wing still informs skew.
+        if weight <= 0:
+            weight = float(max(quote.open_interest, 0))
+        if weight <= 0 and quote.mid:
+            weight = 1.0
+        values.append(iv)
+        weights.append(weight)
+    return weighted_mean(values, weights)
+
+
+def nearest_quote(quotes: list[OptionQuote], strike: float) -> OptionQuote | None:
+    valid = [q for q in quotes if q.mid is not None and q.mid > 0]
+    if not valid:
+        return None
+    return min(valid, key=lambda q: abs(q.strike - strike))
+
+
+def interpolate(xs: list[float], ys: list[float], x: float) -> float | None:
+    if not xs or len(xs) != len(ys):
+        return None
+    paired = sorted(zip(xs, ys), key=lambda p: p[0])
+    xs, ys = [p[0] for p in paired], [p[1] for p in paired]
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    for i in range(1, len(xs)):
+        if xs[i] >= x:
+            span = xs[i] - xs[i - 1]
+            if span <= 0:
+                return ys[i]
+            t = (x - xs[i - 1]) / span
+            return ys[i - 1] + t * (ys[i] - ys[i - 1])
+    return ys[-1]
+
+
+def iv_at_abs_delta(
+    quotes: Iterable[OptionQuote],
+    spot: float,
+    expiry: date,
+    right: Right,
+    target: float = 0.25,
+    now: datetime | None = None,
+) -> float | None:
+    """Linearly interpolate IV at |delta| ≈ target (default 25-delta)."""
+    t = year_fraction(expiry, now=now)
+    deltas: list[float] = []
+    ivs: list[float] = []
+    for quote in quotes:
+        if quote.right != right:
+            continue
+        sigma = sane_iv(quote.iv)
+        if sigma is None:
+            continue
+        delta = call_delta(spot, quote.strike, t, sigma)
+        if delta is None:
+            continue
+        abs_delta = delta if right == "call" else abs(delta - 1.0)
+        if abs_delta <= 0.01 or abs_delta >= 0.99:
+            continue
+        deltas.append(abs_delta)
+        ivs.append(sigma)
+    if len(deltas) < 2:
+        return volume_weighted_iv([q for q in quotes if q.right == right])
+    return interpolate(deltas, ivs, target)
+
+
+def risk_reversal_iv(
+    quotes: Iterable[OptionQuote],
+    spot: float,
+    expiry: date,
+    now: datetime | None = None,
+    target: float = 0.25,
+) -> float | None:
+    """25-delta call IV minus 25-delta put IV. Positive = calls expensive vs puts."""
+    quotes = list(quotes)
+    call_iv = iv_at_abs_delta(quotes, spot, expiry, "call", target=target, now=now)
+    put_iv = iv_at_abs_delta(quotes, spot, expiry, "put", target=target, now=now)
+    if call_iv is None or put_iv is None:
+        return None
+    return call_iv - put_iv
+
+
+def bias_from_metrics(
+    cppi: float | None,
+    risk_reversal: float | None,
+    surge_gap: float | None,
+) -> tuple[str, int, str, str]:
+    """Map metrics to a readable bias. Score is -2..+2, not a trade recommendation."""
+    score = 0
+    if cppi is not None:
+        if cppi >= 0.25:
+            score += 2
+        elif cppi >= 0.08:
+            score += 1
+        elif cppi <= -0.25:
+            score -= 2
+        elif cppi <= -0.08:
+            score -= 1
+    if risk_reversal is not None:
+        if risk_reversal >= 0.03:
+            score += 1
+        elif risk_reversal <= -0.03:
+            score -= 1
+    if surge_gap is not None:
+        if surge_gap >= 8:
+            score += 1
+        elif surge_gap <= -8:
+            score -= 1
+    score = max(-2, min(2, score))
+
+    labels = {
+        2: (
+            "call",
+            "0DTE 콜 프리미엄·수요가 풋을 뚜렷하게 앞섭니다. 상승 베팅 자금이 몰리는 구간입니다.",
+            "Near-term call premium/demand is clearly ahead of puts. Upside bets are being paid up.",
+        ),
+        1: (
+            "mild_call",
+            "콜 쪽으로 기울었습니다. 급등 강도는 아직 강하지 않습니다.",
+            "Skewed toward calls, but the surge is not extreme yet.",
+        ),
+        0: (
+            "neutral",
+            "콜과 풋 시세가 크게 갈리지 않습니다. 한쪽만의 급등 신호는 약합니다.",
+            "Call and put pricing are not far apart. No one-sided surge.",
+        ),
+        -1: (
+            "mild_put",
+            "풋 쪽으로 기울었습니다. 하락 헤지/베팅 수요가 조금 더 큽니다.",
+            "Skewed toward puts. Downside hedges/bets are a bit more expensive.",
+        ),
+        -2: (
+            "put",
+            "0DTE 풋 프리미엄·수요가 콜을 뚜렷하게 앞섭니다. 하락 방어/베팅 자금이 몰리는 구간입니다.",
+            "Near-term put premium/demand is clearly ahead of calls. Downside protection is being paid up.",
+        ),
+    }
+    bias, summary_ko, summary_en = labels[score]
+    return bias, score, summary_ko, summary_en

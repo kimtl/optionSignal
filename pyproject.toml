@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optionsignal"
+version = "0.1.0"
+description = "Nasdaq call vs put premium pressure for near-term option chains"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "yfinance>=0.2.40",
+  "pandas>=2.2",
+  "fastapi>=0.115",
+  "tastytrade>=12.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+optionsignal = "optionsignal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+optionsignal = ["static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
