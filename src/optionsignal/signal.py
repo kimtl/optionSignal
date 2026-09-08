@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 from .metrics import (
     bias_from_metrics,
     call_put_premium_imbalance,
-    is_near_otm,
     nearest_quote,
     premium_ratio,
     risk_reversal_iv,
+    select_near_otm,
+    strike_range,
     total_volume,
     volume_premium,
     volume_weighted_iv,
@@ -42,9 +43,9 @@ def _slice_for_expiry(
     now: datetime,
     band: float,
     wing_pct: float,
+    otm_points: float | None = None,
 ) -> ExpirySlice:
-    calls = [q for q in quotes if q.right == "call" and is_near_otm(q, spot, band)]
-    puts = [q for q in quotes if q.right == "put" and is_near_otm(q, spot, band)]
+    calls, puts = select_near_otm(quotes, spot, band, points=otm_points)
     call_prem = volume_premium(calls)
     put_prem = volume_premium(puts)
     call_iv = volume_weighted_iv(calls)
@@ -76,7 +77,10 @@ def build_report(
     max_dte: int = DEFAULT_HEADLINE_DTE,
     moneyness_band: float = DEFAULT_BAND,
     wing_pct: float = DEFAULT_WING_PCT,
+    otm_points: float | None = None,
 ) -> SignalReport:
+    if otm_points is not None and otm_points <= 0:
+        otm_points = None
     now = chain.asof if chain.asof.tzinfo else chain.asof.replace(tzinfo=NY)
     slices: list[ExpirySlice] = []
     headline_calls: list[OptionQuote] = []
@@ -88,16 +92,13 @@ def build_report(
         if dte < 0:
             continue
         slices.append(
-            _slice_for_expiry(expiry, quotes, chain.spot, now, moneyness_band, wing_pct)
+            _slice_for_expiry(expiry, quotes, chain.spot, now, moneyness_band, wing_pct, otm_points)
         )
         if dte <= max_dte:
             headline_all.extend(quotes)
-            headline_calls.extend(
-                q for q in quotes if q.right == "call" and is_near_otm(q, chain.spot, moneyness_band)
-            )
-            headline_puts.extend(
-                q for q in quotes if q.right == "put" and is_near_otm(q, chain.spot, moneyness_band)
-            )
+            calls, puts = select_near_otm(quotes, chain.spot, moneyness_band, points=otm_points)
+            headline_calls.extend(calls)
+            headline_puts.extend(puts)
 
     call_prem = volume_premium(headline_calls)
     put_prem = volume_premium(headline_puts)
@@ -158,6 +159,9 @@ def build_report(
         summary_ko=summary_ko,
         summary_en=summary_en,
         slices=slices,
+        otm_points=otm_points,
+        headline_call_strikes=strike_range(headline_calls),
+        headline_put_strikes=strike_range(headline_puts),
     )
 
 

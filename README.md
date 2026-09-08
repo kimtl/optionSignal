@@ -65,6 +65,7 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 | `OPTIONSIGNAL_INTERVAL=5` | tastytrade일 때 보드 찍는 간격(초) |
 | `OPTIONSIGNAL_MAX_DTE=0` | 0DTE만 |
 | `OPTIONSIGNAL_SYMBOL=/NQ` | 나스닥 선물옵션 |
+| `OPTIONSIGNAL_OTM_POINTS=150` | CPPI에 넣을 옵션: 등가격에서 ±N포인트. 비우면 ±8% 밴드. 화면 「선정」에서도 바꿀 수 있음 |
 | `TASTYTRADE_CLIENT_SECRET` | tastytrade OAuth |
 | `TASTYTRADE_REFRESH_TOKEN` | tastytrade refresh token |
 
@@ -90,11 +91,13 @@ ATM 콜−풋은 패리티 때문에 거의 안 움직입니다. 단타는 **1�
 
 | 숫자 | 의미 |
 | --- | --- |
-| **CPPI** | 0DTE, spot ±8% 옵션의 (콜−풋)/(콜+풋) |
+| **CPPI** | 0DTE 콜·풋 프리미엄(중간가×거래량 합)의 (콜−풋)/(콜+풋). 옵션 선정은 「선정」 메뉴: 등가격 ±8% 밴드(기본) 또는 등가격 행사가에서 ±100/150/200/300포인트 |
 | **1분 Δ** | 직전 분 대비 CPPI 변화. 급등의 방향 |
 | **1분 프리미엄 흐름** | 이번 분에 콜 프리미엄이 늘었는지, 풋이 늘었는지 |
 | **5분 Δ** | 조금 더 굵은 흐름 |
 | **25Δ RR** | 콜 IV − 풋 IV. 지수는 원래 풋 스큐라 음수가 흔함 |
+
+CPPI 카드 아래 「선정 행사가」에 지금 합산에 들어간 콜/풋 행사가 범위가 나옵니다. 차트는 파란 선이 CPPI(왼쪽 축), 노란 캔들이 NQ 선물(오른쪽 축)입니다.
 
 정규장(뉴욕 09:30–16:00)과 CME 거의 24시간 선물은 tastytrade 스트림이 따라갑니다. 장후 Yahoo 폴링은 쓰지 마세요.
 

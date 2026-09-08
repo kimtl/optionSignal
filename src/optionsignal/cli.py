@@ -7,7 +7,7 @@ from typing import Sequence
 
 from .collector import DEFAULT_INTERVAL
 from .fetch import DEFAULT_SYMBOL, fetch_chain
-from .settings import default_interval, default_symbol, env_int, env_str, listen_port
+from .settings import default_interval, default_otm_points, default_symbol, env_int, env_str, listen_port
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report
 from .store import load_history, save_snapshot
 
@@ -63,7 +63,9 @@ def _print_report(report) -> None:
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     chain = fetch_chain(symbol=args.symbol, max_dte=args.max_dte, expiry_limit=max(1, args.max_dte + 1))
-    report = build_report(chain, max_dte=args.max_dte, moneyness_band=args.band)
+    report = build_report(
+        chain, max_dte=args.max_dte, moneyness_band=args.band, otm_points=args.otm_points
+    )
     if not args.no_save:
         save_snapshot(report)
     if args.json:
@@ -107,6 +109,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         max_dte=args.max_dte,
         interval=args.interval,
         start_collector=True,
+        otm_points=getattr(args, "otm_points", None),
     )
     import logging
 
@@ -132,6 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     snap.add_argument("--symbol", default=DEFAULT_SYMBOL, help="QQQ (default) or ^NDX")
     snap.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
     snap.add_argument("--band", type=float, default=DEFAULT_BAND)
+    snap.add_argument(
+        "--otm-points", type=float, default=default_otm_points(),
+        help="Strike distance from ATM in index points (e.g. 100/150/200). Omit for the percent band.",
+    )
     snap.add_argument("--json", action="store_true")
     snap.add_argument("--no-save", action="store_true")
     snap.set_defaults(func=_cmd_snapshot)
@@ -146,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--symbol", default=default_symbol())
     serve.add_argument("--max-dte", type=int, default=env_int("OPTIONSIGNAL_MAX_DTE", DEFAULT_HEADLINE_DTE))
     serve.add_argument("--interval", type=int, default=default_interval(), help="Seconds between board snapshots")
+    serve.add_argument(
+        "--otm-points", type=float, default=default_otm_points(),
+        help="CPPI strike distance from ATM in index points (100/150/200). Omit for the percent band.",
+    )
     serve.add_argument("--host", default="0.0.0.0", help="Bind address so others can join")
     serve.add_argument("--port", type=int, default=listen_port(), help="Port. Railway sets PORT automatically.")
     serve.set_defaults(func=_cmd_serve)

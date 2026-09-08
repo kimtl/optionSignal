@@ -18,6 +18,18 @@ def env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def default_otm_points() -> float | None:
+    """Strike distance (index points) from ATM used for CPPI. Unset/0 = percent band."""
+    raw = os.environ.get("OPTIONSIGNAL_OTM_POINTS")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def listen_port(default: int = 8000) -> int:
     """Railway injects PORT. Local default remains 8000."""
     return env_int("PORT", default)
