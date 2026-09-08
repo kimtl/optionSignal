@@ -6,12 +6,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import SignalReport
+from .settings import db_path
 
 DEFAULT_DB = Path("data/optionsignal.db")
 
 
+def _resolve_db(path: Path | None = None) -> Path:
+    if path is not None:
+        return path
+    env_path = db_path()
+    if env_path != Path("data/optionsignal.db"):
+        return env_path
+    return DEFAULT_DB
+
+
 def _connect(path: Path | None = None) -> sqlite3.Connection:
-    path = path or DEFAULT_DB
+    path = _resolve_db(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute(

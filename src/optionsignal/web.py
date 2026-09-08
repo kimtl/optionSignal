@@ -57,6 +57,15 @@ def create_app(
             return html_path.read_text(encoding="utf-8")
         return files("optionsignal").joinpath("static/index.html").read_text(encoding="utf-8")
 
+    @app.get("/health")
+    def health():
+        hub = _hub()
+        return {
+            "ok": True,
+            "tick": hub.latest is not None,
+            "error": hub.error,
+        }
+
     @app.get("/api/live")
     def api_live():
         hub = _hub()
@@ -142,7 +151,15 @@ def create_app(
             finally:
                 hub.unsubscribe(queue)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return app
 

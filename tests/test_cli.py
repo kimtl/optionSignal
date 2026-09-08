@@ -26,6 +26,15 @@ def test_parser_defaults():
     assert args.json is True
 
 
+def test_serve_reads_railway_port(monkeypatch):
+    monkeypatch.setenv("PORT", "9090")
+    from optionsignal.cli import build_parser as rebuild
+
+    args = rebuild().parse_args(["serve"])
+    assert args.port == 9090
+    assert args.host == "0.0.0.0"
+
+
 def test_snapshot_json(monkeypatch, capsys):
     monkeypatch.setattr("optionsignal.cli.fetch_chain", lambda **kwargs: _chain())
     rc = main(["snapshot", "--json", "--no-save"])

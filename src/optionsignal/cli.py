@@ -7,6 +7,7 @@ from typing import Sequence
 
 from .collector import DEFAULT_INTERVAL
 from .fetch import DEFAULT_SYMBOL, fetch_chain
+from .settings import env_int, env_str, listen_port
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report
 from .store import load_history, save_snapshot
 
@@ -109,7 +110,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     )
     app.state.hub.port = args.port
     print(f"optionSignal  http://{args.host}:{args.port}")
-    print("같은 네트워크의 다른 사람은 이 컴퓨터의 IP:포트로 같이 보면 됩니다.")
+    if args.host == "0.0.0.0":
+        print("Railway면 대시보드에서 Generate Domain 한 뒤 그 URL을 같이 보면 됩니다.")
+    else:
+        print("같은 네트워크의 다른 사람은 이 컴퓨터의 IP:포트로 같이 보면 됩니다.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -136,19 +140,19 @@ def build_parser() -> argparse.ArgumentParser:
     hist.set_defaults(func=_cmd_history)
 
     serve = sub.add_parser("serve", help="Shared web board (default)")
-    serve.add_argument("--symbol", default=DEFAULT_SYMBOL)
-    serve.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
-    serve.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Seconds between ticks, default 60")
+    serve.add_argument("--symbol", default=env_str("OPTIONSIGNAL_SYMBOL", DEFAULT_SYMBOL))
+    serve.add_argument("--max-dte", type=int, default=env_int("OPTIONSIGNAL_MAX_DTE", DEFAULT_HEADLINE_DTE))
+    serve.add_argument("--interval", type=int, default=env_int("OPTIONSIGNAL_INTERVAL", DEFAULT_INTERVAL), help="Seconds between ticks, default 60")
     serve.add_argument("--host", default="0.0.0.0", help="Bind address so others can join")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--port", type=int, default=listen_port(), help="Port. Railway sets PORT automatically.")
     serve.set_defaults(func=_cmd_serve)
 
     dash = sub.add_parser("dashboard", help="Alias for serve")
     dash.add_argument("--symbol", default=DEFAULT_SYMBOL)
     dash.add_argument("--max-dte", type=int, default=DEFAULT_HEADLINE_DTE)
-    dash.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
+    dash.add_argument("--interval", type=int, default=env_int("OPTIONSIGNAL_INTERVAL", DEFAULT_INTERVAL))
     dash.add_argument("--host", default="0.0.0.0")
-    dash.add_argument("--port", type=int, default=8000)
+    dash.add_argument("--port", type=int, default=listen_port())
     dash.set_defaults(func=_cmd_serve)
     return parser
 

@@ -57,3 +57,6 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         status = client.get("/api/status")
         assert status.status_code == 200
         assert status.json()["interval"] == 60
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["ok"] is True

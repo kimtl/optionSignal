@@ -262,8 +262,11 @@
       if (status.last_tick_at) {
         nextAt = Date.parse(status.last_tick_at) + intervalSec * 1000;
       }
-      const host = status.share_hint || location.hostname;
-      $("share").textContent = `공유 ${host}:${status.port || location.port || 8000}`;
+      const share = status.public_url
+        || (status.share_hint && String(status.share_hint).includes(".") && !String(status.share_hint).startsWith("http")
+              ? `${status.share_hint}:${status.port || location.port || 8000}`
+              : (status.share_hint || location.host));
+      $("share").textContent = `공유 ${String(share).replace(/^https?:\/\//, "")}`;
       if (status.symbol && $("symbol").value !== status.symbol && status.symbol !== "NDX") {
         const want = status.symbol === "NDX" ? "^NDX" : status.symbol;
         if ([...$("symbol").options].some(o => o.value === want)) $("symbol").value = want;

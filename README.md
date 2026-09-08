@@ -16,11 +16,32 @@ python -m optionsignal
 - 서버 켠 사람: http://127.0.0.1:8000
 - 같은 와이파이의 다른 사람: 화면 위쪽 **공유 URL** (이 컴퓨터의 LAN IP:8000)
 
-인터넷으로 원격에서 보려면 이 포트를 VPS / 터널로 열면 됩니다. 브라우저마다 Yahoo를 치지 않고, 서버 분봉 하나만 구독합니다.
+인터넷으로 원격에서 보려면 Railway에 올리면 됩니다. 브라우저마다 Yahoo를 치지 않고, 서버 분봉 하나만 구독합니다.
 
 ```bash
 python -m optionsignal serve --interval 60 --max-dte 1 --host 0.0.0.0 --port 8000
 ```
+
+## Railway에 올리기
+
+가능합니다. 이 저장소를 Railway 서비스 하나에 붙이면 됩니다. 인스턴스는 **1개**만 쓰세요. 복제본을 늘리면 분봉을 두 번 찍고 화면이 갈라집니다.
+
+1. [Railway](https://railway.app) → **New Project** → **GitHub repo** 에서 `optionSignal` 선택
+2. 빌드가 끝나면 **Settings → Networking → Generate Domain**
+3. 나온 `https://….up.railway.app` 을 같이 보면 됩니다
+
+시작 명령은 `railway.json`에 이미 있습니다. Railway가 `PORT`를 넣고, 앱은 `0.0.0.0`에 붙습니다.
+
+선택:
+
+| 변수 / 볼륨 | 용도 |
+| --- | --- |
+| Volume을 `/data`에 마운트 | 재배포해도 분봉 테이프가 남음. 없으면 재시작 때 차트는 초기화 |
+| `OPTIONSIGNAL_INTERVAL=60` | 분 간격 |
+| `OPTIONSIGNAL_MAX_DTE=1` | 오늘·내일 만기만 |
+| `OPTIONSIGNAL_SYMBOL=QQQ` | 기본 심볼 |
+
+Yahoo가 데이터센터 IP를 막으면 보드에 에러가 뜹니다. 그때는 로그를 보면 됩니다. 정규장에 가장 잘 움직입니다.
 
 ## 스캘핑에서 볼 숫자
 

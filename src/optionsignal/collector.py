@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .fetch import DEFAULT_SYMBOL, fetch_chain
+from .settings import public_url
 from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report, with_deltas, yahoo_session_status
 from .store import compact_point, load_history, save_snapshot
 
@@ -49,6 +50,7 @@ class LiveHub:
         self.port = 8000
 
     def status(self) -> dict:
+        url = public_url()
         return {
             "symbol": self.symbol,
             "max_dte": self.max_dte,
@@ -57,7 +59,8 @@ class LiveHub:
             "last_tick_at": self.last_tick_at.isoformat(timespec="seconds") if self.last_tick_at else None,
             "error": self.error,
             "session": yahoo_session_status(),
-            "share_hint": lan_ip(),
+            "share_hint": url or lan_ip(),
+            "public_url": url,
             "port": self.port,
         }
 
