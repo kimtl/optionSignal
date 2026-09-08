@@ -11,7 +11,32 @@ from optionsignal.models import OptionChain
 NY = ZoneInfo("America/New_York")
 
 
-def test_snapshot_uses_bid_ask_mid_and_size_as_volume():
+def test_right_reads_tasty_put_abbrev():
+    from enum import StrEnum
+
+    from optionsignal.tasty import _right
+
+    class OptionType(StrEnum):
+        CALL = "C"
+        PUT = "P"
+
+    assert _right(OptionType.PUT) == "put"
+    assert _right(OptionType.CALL) == "call"
+    assert _right("P") == "put"
+    assert _right("C") == "call"
+    assert _right("Put") == "put"
+    assert _right("", "./NQU26P24700") == "put"
+    assert _right("", "./NQU26C24700") == "call"
+
+
+def test_right_reads_installed_tastytrade_enum():
+    from tastytrade.instruments import OptionType
+
+    from optionsignal.tasty import _right
+
+    assert OptionType.PUT == "P"
+    assert _right(OptionType.PUT) == "put"
+    assert _right(OptionType.CALL) == "call"
     expiry = date(2026, 9, 8)
     contracts = [
         LiveContract(expiry, "call", 24700, ".NQ1C", 10),
