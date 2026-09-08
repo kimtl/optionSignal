@@ -57,7 +57,11 @@ def test_hub_reads_tasty_feed(monkeypatch, tmp_path):
             )
 
         ready = True
+        streaming = True
         error = None
+        phase = "live"
+        contracts = []
+        quoted_count = 10
 
         def stop(self):
             return None
@@ -68,6 +72,61 @@ def test_hub_reads_tasty_feed(monkeypatch, tmp_path):
     assert payload["headline_cppi"] is not None
     assert hub.status()["source"] == "tastytrade"
     assert hub.status()["realtime"] is True
+    assert hub.status()["session"]["code"] == "tasty"
+
+
+def test_pick_front_future_skips_product_root_style_dates():
+    from types import SimpleNamespace
+    from optionsignal.tasty import pick_front_future
+
+    today = date(2026, 9, 8)
+    items = [
+        SimpleNamespace(symbol="/NQZ5", active_month=False, expiration_date=date(2025, 12, 19)),
+        SimpleNamespace(symbol="/NQU6", active_month=True, expiration_date=date(2026, 9, 18)),
+        SimpleNamespace(symbol="/NQZ6", active_month=False, expiration_date=date(2026, 12, 18)),
+    ]
+    picked = pick_front_future(items, today=today)
+    assert picked.symbol == "/NQU6"
+
+
+def test_nearest_contracts_keeps_strikes_closest_to_spot():
+    from optionsignal.tasty import LiveContract, nearest_contracts
+
+    expiry = date(2026, 9, 8)
+    contracts = []
+    for strike in range(20000, 30000, 100):
+        contracts.append(LiveContract(expiry, "call", float(strike), f".C{strike}"))
+        contracts.append(LiveContract(expiry, "put", float(strike), f".P{strike}"))
+    kept = nearest_contracts(contracts, 24700, limit=8)
+    strikes = {c.strike for c in kept}
+    assert len(kept) == 8
+    assert 24700 in strikes
+    assert max(strikes) - min(strikes) <= 400
+
+
+def test_status_not_stuck_connecting_when_rest_ready(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+
+    class Feed:
+        ready = True
+        streaming = False
+        error = None
+        phase = "quotes"
+        contracts = [object(), object()]
+        quoted_count = 2
+
+        def snapshot(self):
+            raise AssertionError("unused")
+
+        def stop(self):
+            return None
+
+    hub = LiveHub(symbol="/NQ", interval=5, tasty_feed=Feed())
+    status = hub.status()
+    assert status["session"]["code"] == "tasty-rest"
+    assert status["realtime"] is False
+    assert status["ready"] is True
+    assert status["contracts"] == 2
 
 
 def test_hub_nq_without_tasty_does_not_call_yahoo(monkeypatch, tmp_path):
@@ -87,5 +146,5 @@ def test_snapshot_raises_not_ready_before_chain():
     from optionsignal.tasty import FeedNotReady, TastyFeed
 
     feed = TastyFeed(symbol="/NQ")
-    with pytest.raises(FeedNotReady, match="연결"):
+    with pytest.raises(FeedNotReady, match="체인"):
         feed.snapshot()

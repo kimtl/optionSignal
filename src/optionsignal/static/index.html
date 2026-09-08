@@ -259,10 +259,22 @@
       const sess = status.session || {};
       $("session").textContent = sess.label_ko || "세션";
       $("session").className = "pill" + (sess.live ? " live" : " hot");
-      $("feed").textContent = status.realtime
-        ? "tastytrade 실시간"
-        : (status.source === "tastytrade" ? "tastytrade 연결 중" : "Yahoo 지연");
-      $("feed").className = "pill" + (status.realtime ? " live" : " hot");
+      if (status.realtime) {
+        $("feed").textContent = "tastytrade 실시간";
+        $("feed").className = "pill live";
+      } else if (status.source === "tastytrade" && status.error && !status.ready) {
+        $("feed").textContent = "tastytrade 실패";
+        $("feed").className = "pill hot";
+      } else if (status.source === "tastytrade" && (status.ready || status.contracts)) {
+        $("feed").textContent = `tastytrade 시세 ${status.quoted || 0}/${status.contracts || 0}`;
+        $("feed").className = "pill live";
+      } else if (status.source === "tastytrade") {
+        $("feed").textContent = status.phase ? `tastytrade ${status.phase}` : "tastytrade 연결 중";
+        $("feed").className = "pill hot";
+      } else {
+        $("feed").textContent = "Yahoo 지연";
+        $("feed").className = "pill hot";
+      }
       $("viewers").textContent = `접속 ${status.viewers ?? 0}`;
       const nqOpt = [...$("symbol").options].find(o => o.value === "/NQ");
       if (nqOpt) nqOpt.disabled = status.source !== "tastytrade";

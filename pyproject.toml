@@ -12,7 +12,7 @@ dependencies = [
   "yfinance>=0.2.40",
   "pandas>=2.2",
   "fastapi>=0.115",
-  "tastytrade>=12.0",
+  "tastytrade>=13.0",
 ]
 
 [project.optional-dependencies]
