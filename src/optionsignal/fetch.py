@@ -85,7 +85,7 @@ def list_expiries(symbol: str = DEFAULT_SYMBOL) -> list[str]:
 
 def fetch_chain(
     symbol: str = DEFAULT_SYMBOL,
-    max_dte: int = 45,
+    max_dte: int = 0,
     expiry_limit: int = 8,
     now: datetime | None = None,
 ) -> OptionChain:
@@ -95,7 +95,7 @@ def fetch_chain(
     are the liquid public proxy for the same index; NQ=F is fetched as the
     futures reference price.
 
-    Scalping polls should keep max_dte small (0–2) so each minute tick is fast.
+    Scalping polls should keep max_dte at 0 so only today's expiry is used.
     """
     now = now or datetime.now(tz=NY)
     today = now.astimezone(NY).date()

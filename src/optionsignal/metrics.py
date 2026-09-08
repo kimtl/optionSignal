@@ -246,7 +246,7 @@ def bias_from_metrics(
     labels = {
         2: (
             "call",
-            "근월 콜 프리미엄·수요가 풋을 뚜렷하게 앞섭니다. 상승 베팅 자금이 몰리는 구간입니다.",
+            "0DTE 콜 프리미엄·수요가 풋을 뚜렷하게 앞섭니다. 상승 베팅 자금이 몰리는 구간입니다.",
             "Near-term call premium/demand is clearly ahead of puts. Upside bets are being paid up.",
         ),
         1: (
@@ -266,7 +266,7 @@ def bias_from_metrics(
         ),
         -2: (
             "put",
-            "근월 풋 프리미엄·수요가 콜을 뚜렷하게 앞섭니다. 하락 방어/베팅 자금이 몰리는 구간입니다.",
+            "0DTE 풋 프리미엄·수요가 콜을 뚜렷하게 앞섭니다. 하락 방어/베팅 자금이 몰리는 구간입니다.",
             "Near-term put premium/demand is clearly ahead of calls. Downside protection is being paid up.",
         ),
     }

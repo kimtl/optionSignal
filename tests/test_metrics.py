@@ -20,7 +20,7 @@ from optionsignal.models import OptionChain, OptionQuote
 from optionsignal.signal import build_report
 
 NY = ZoneInfo("America/New_York")
-EXPIRY = date(2026, 9, 9)
+EXPIRY = date(2026, 9, 8)
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=NY)
 
 

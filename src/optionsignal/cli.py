@@ -62,7 +62,7 @@ def _print_report(report) -> None:
 
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
-    chain = fetch_chain(symbol=args.symbol, max_dte=args.max_dte, expiry_limit=max(2, args.max_dte + 1))
+    chain = fetch_chain(symbol=args.symbol, max_dte=args.max_dte, expiry_limit=max(1, args.max_dte + 1))
     report = build_report(chain, max_dte=args.max_dte, moneyness_band=args.band)
     if not args.no_save:
         save_snapshot(report)

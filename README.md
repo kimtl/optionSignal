@@ -11,7 +11,7 @@ python -m pip install -e ".[dev]"
 python -m optionsignal
 ```
 
-기본은 `0.0.0.0:8000`, DTE ≤ 1입니다. tastytrade 키가 있으면 `/NQ`를 5초마다, 없으면 Yahoo 지연 시세입니다.
+기본은 `0.0.0.0:8000`, **0DTE만** 봅니다. tastytrade 키가 있으면 `/NQ` 0DTE를 5초마다, 없으면 Yahoo 지연 시세입니다.
 
 - 서버 켠 사람: http://127.0.0.1:8000
 - 같은 와이파이의 다른 사람: 화면 위쪽 **공유 URL** (이 컴퓨터의 LAN IP:8000)
@@ -19,12 +19,12 @@ python -m optionsignal
 인터넷으로 원격에서 보려면 Railway에 올리면 됩니다.
 
 ```bash
-python -m optionsignal serve --interval 5 --max-dte 1 --host 0.0.0.0 --port 8000
+python -m optionsignal serve --interval 5 --max-dte 0 --host 0.0.0.0 --port 8000
 ```
 
 ## 시세 출처
 
-정확한 실시간은 **tastytrade DXLink (dxFeed)** 입니다. 계정에 시세 권한이 있으면 NQ 선물옵션 호가·IV가 스트림으로 들어옵니다. 서버는 그 캐시를 기본 5초마다 보드에 찍습니다.
+정확한 실시간은 **tastytrade DXLink (dxFeed)** 입니다. 계정에 시세 권한이 있으면 **NQ 0DTE** 호가·IV가 스트림으로 들어옵니다.
 
 Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙니다.
 
@@ -61,7 +61,7 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 | --- | --- |
 | Volume을 `/data`에 마운트 | 재배포해도 분봉 테이프가 남음. 없으면 재시작 때 차트는 초기화 |
 | `OPTIONSIGNAL_INTERVAL=5` | tastytrade일 때 보드 찍는 간격(초) |
-| `OPTIONSIGNAL_MAX_DTE=1` | 오늘·내일 만기만 |
+| `OPTIONSIGNAL_MAX_DTE=0` | 0DTE만 |
 | `OPTIONSIGNAL_SYMBOL=/NQ` | 나스닥 선물옵션 |
 | `TASTYTRADE_CLIENT_SECRET` | tastytrade OAuth |
 | `TASTYTRADE_REFRESH_TOKEN` | tastytrade refresh token |
@@ -74,7 +74,7 @@ ATM 콜−풋은 패리티 때문에 거의 안 움직입니다. 단타는 **1�
 
 | 숫자 | 의미 |
 | --- | --- |
-| **CPPI** | 근월 spot ±8% 옵션의 (콜−풋)/(콜+풋). 거래량×중간가 |
+| **CPPI** | 0DTE, spot ±8% 옵션의 (콜−풋)/(콜+풋) |
 | **1분 Δ** | 직전 분 대비 CPPI 변화. 급등의 방향 |
 | **1분 프리미엄 흐름** | 이번 분에 콜 프리미엄이 늘었는지, 풋이 늘었는지 |
 | **5분 Δ** | 조금 더 굵은 흐름 |

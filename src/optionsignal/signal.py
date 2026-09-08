@@ -21,7 +21,7 @@ from .models import ExpirySlice, OptionChain, OptionQuote, SignalReport
 NY = ZoneInfo("America/New_York")
 DEFAULT_BAND = 0.08
 DEFAULT_WING_PCT = 0.03
-DEFAULT_HEADLINE_DTE = 1
+DEFAULT_HEADLINE_DTE = 0
 
 
 def _dte(expiry, now: datetime) -> int:

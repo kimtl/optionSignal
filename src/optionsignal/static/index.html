@@ -94,7 +94,7 @@
   <header>
     <div>
       <h1>optionSignal LIVE</h1>
-      <div class="sub">스캘핑용 1분 콜/풋 보드 · 서버가 한 번 찍으면 모두 같은 숫자를 봅니다</div>
+      <div class="sub">0DTE 콜/풋 보드 · 서버가 한 번 찍으면 모두 같은 숫자를 봅니다</div>
     </div>
     <div class="pills">
       <span class="pill" id="feed">시세 —</span>
@@ -109,7 +109,7 @@
         <option value="QQQ">QQQ · 나스닥100 ETF</option>
         <option value="^NDX">NDX · 나스닥100 지수</option>
       </select>
-      <label class="sub">DTE ≤ <input id="maxDte" type="number" min="0" max="7" value="1" style="width:58px" /></label>
+      <label class="sub">0DTE <input id="maxDte" type="number" min="0" max="0" value="0" style="width:58px" /></label>
       <button id="tick">지금 찍기</button>
       <button id="copy">링크 복사</button>
     </div>
@@ -120,7 +120,7 @@
         <div class="label">CPPI · 콜-풋 프리미엄</div>
         <div id="cppi" class="big neutral">—</div>
         <div id="bias" class="sub">첫 분봉을 기다리는 중</div>
-        <p class="summary" id="summary">서버가 1분마다 QQQ 근월 체인을 한 번만 가져옵니다.</p>
+        <p class="summary" id="summary">서버가 0DTE 체인만 가져옵니다.</p>
         <div class="bars">
           <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
           <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
@@ -156,7 +156,7 @@
       </article>
     </section>
     <section class="card">
-      <div class="label">근월 만기</div>
+      <div class="label">0DTE 만기</div>
       <table>
         <thead>
           <tr>
@@ -171,8 +171,7 @@
         <summary>같이 보는 방법 · 이 숫자가 의미하는 것</summary>
         한 사람이 <b>python -m optionsignal</b> 로 이 보드를 켜면, 같은 와이파이의 다른 사람은 위 공유 URL만 열면 됩니다.
         브라우저마다 Yahoo를 치지 않고, 서버가 1분마다 한 번 찍은 값을 같이 봅니다.
-        스캘핑에서는 CPPI 레벨보다 <b>1분 Δ</b>와 <b>1분 콜/풋 프리미엄 흐름</b>을 봅니다. 콜 프리미엄이 갑자기 늘면 상승 베팅이 들어오는 중이고, 풋이 늘면 하락 쪽입니다.
-        ATM 콜−풋은 패리티 때문에 거의 안 움직입니다. 실제 NQ 옵션 호가는 CME 유료라 QQQ/NDX로 같은 지수를 봅니다.
+        스캘핑에서는 CPPI 레벨보다 <b>직전 틱 Δ</b>와 <b>콜/풋 프리미엄 흐름</b>을 봅니다. 숫자는 전부 <b>0DTE</b>만 사용합니다.
       </details>
     </section>
   </main>

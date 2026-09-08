@@ -103,7 +103,7 @@ class LiveHub:
             chain = self.fetch_fn(
                 symbol=self.symbol,
                 max_dte=self.max_dte,
-                expiry_limit=max(2, self.max_dte + 1),
+                expiry_limit=max(1, self.max_dte + 1),
             )
         report = build_report(chain, max_dte=self.max_dte, moneyness_band=self.band)
         payload = with_deltas(report.to_dict(), history)

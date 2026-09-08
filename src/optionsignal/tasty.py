@@ -103,7 +103,7 @@ def snapshot_from_cache(
 class TastyFeed:
     """dxFeed quotes via tastytrade DXLink. Snapshot the in-memory book for the board."""
 
-    def __init__(self, symbol: str = DEFAULT_FUTURES_ROOT, max_dte: int = 1, band: float = 0.08) -> None:
+    def __init__(self, symbol: str = DEFAULT_FUTURES_ROOT, max_dte: int = 0, band: float = 0.08) -> None:
         self.symbol = symbol
         self.max_dte = max(0, int(max_dte))
         self.band = band
@@ -256,7 +256,7 @@ class TastyFeed:
                     )
                 )
         if not contracts:
-            raise RuntimeError("tastytrade에서 근월 스트라이크를 찾지 못했습니다.")
+            raise RuntimeError("tastytrade에서 0DTE 스트라이크를 찾지 못했습니다.")
         if spot is None and len(contracts) > 160:
             contracts = contracts[:160]
         self.contracts = contracts
