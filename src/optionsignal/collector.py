@@ -41,10 +41,12 @@ class LiveHub:
         interval: int | None = None,
         fetch_fn: FetchFn | None = None,
         tasty_feed: TastyFeed | None = None,
+        otm_points: float | None = None,
     ) -> None:
         self.symbol = symbol
         self.max_dte = max_dte
         self.band = band
+        self.otm_points = otm_points if otm_points and otm_points > 0 else None
         self.interval = max(1, int(interval if interval is not None else default_interval()))
         self.fetch_fn = fetch_fn or fetch_chain
         self.tasty_feed = tasty_feed
@@ -91,6 +93,8 @@ class LiveHub:
         return {
             "symbol": self.symbol,
             "max_dte": self.max_dte,
+            "otm_points": self.otm_points,
+            "band": self.band,
             "interval": self.interval,
             "viewers": len(self.subscribers),
             "last_tick_at": self.last_tick_at.isoformat(timespec="seconds") if self.last_tick_at else None,
@@ -120,7 +124,9 @@ class LiveHub:
     def collect_once(self) -> dict:
         history = load_history(self.symbol.lstrip("/"), limit=240)
         chain = self._load_chain()
-        report = build_report(chain, max_dte=self.max_dte, moneyness_band=self.band)
+        report = build_report(
+            chain, max_dte=self.max_dte, moneyness_band=self.band, otm_points=self.otm_points
+        )
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
         self.latest = payload

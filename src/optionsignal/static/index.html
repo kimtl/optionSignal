@@ -133,6 +133,15 @@
         <option value="^NDX">NDX · 나스닥100 지수</option>
       </select>
       <label class="sub">0DTE <input id="maxDte" type="number" min="0" max="0" value="0" style="width:58px" /></label>
+      <label class="sub">선정
+        <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지">
+          <option value="0">등가격 ±8% 밴드</option>
+          <option value="100">등가격 ±100포</option>
+          <option value="150">등가격 ±150포</option>
+          <option value="200">등가격 ±200포</option>
+          <option value="300">등가격 ±300포</option>
+        </select>
+      </label>
       <button id="tick">지금 찍기</button>
       <button id="copy">링크 복사</button>
     </div>
@@ -148,6 +157,7 @@
           <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
           <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
         </div>
+        <p class="meta" id="strikeLine">선정 행사가 —</p>
       </article>
       <article class="card" id="deltaCard">
         <div class="label">1분 변화 · 스캘핑 급등</div>
@@ -184,7 +194,7 @@
           </div>
         </div>
         <canvas id="chart" height="300"></canvas>
-        <p class="meta" id="chartHint">초록/빨강 캔들은 CPPI(왼쪽 축), 노란 캔들은 NQ 선물(오른쪽 축). 휠로 확대/축소 · 최대 12시간.</p>
+        <p class="meta" id="chartHint">파란 선이 CPPI(왼쪽 축, 위가 콜 우세), 노란 캔들이 NQ 선물(오른쪽 축). 휠로 확대/축소 · 최대 12시간.</p>
       </article>
       <article class="card">
         <div class="label">최근 분봉 테이프</div>
@@ -239,7 +249,7 @@
     }
 
     function chartHint() {
-      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 초록/빨강 캔들 CPPI(왼쪽 축) · 노란 캔들 NQ 선물(오른쪽 축) · 휠로 확대/축소`;
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · 파란 선 CPPI(왼쪽 축, 위가 콜 우세) · 노란 캔들 NQ 선물(오른쪽 축) · 휠로 확대/축소`;
     }
 
     function parseTs(p) {
@@ -340,6 +350,11 @@
       $("putBar").style.width = `${(p/tot)*100}%`;
       $("callPrem").textContent = fmt(c, 0);
       $("putPrem").textContent = fmt(p, 0);
+      const cs = tick.headline_call_strikes;
+      const ps = tick.headline_put_strikes;
+      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : "등가격 ±8% 밴드";
+      const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
+      $("strikeLine").textContent = `${rule} · 콜 ${rng(cs)} · 풋 ${rng(ps)}`;
       $("delta").textContent = signed(tick.cppi_delta_1m, 3);
       $("delta").className = "big " + tone(tick.cppi_delta_1m, 0.01);
       const flow = tick.flow_1m;
@@ -432,6 +447,10 @@
         }
       }
       if (status.max_dte != null) $("maxDte").value = status.max_dte;
+      if ("otm_points" in status) {
+        const want = String(status.otm_points ? Math.round(status.otm_points) : 0);
+        if ([...$("otmPoints").options].some(o => o.value === want)) $("otmPoints").value = want;
+      }
       if (status.error) $("summary").innerHTML = `<span class="error">${status.error}</span>`;
     }
 
@@ -473,8 +492,9 @@
       ctx.lineTo(cssW - padR, cssH - padB);
       ctx.lineTo(cssW - padR, padT);
       ctx.stroke();
-      const highs = bars.map(p => p.high ?? p.headline_cppi).filter(v => v != null);
-      const lows = bars.map(p => p.low ?? p.headline_cppi).filter(v => v != null);
+      const closes = bars.map(p => p.close ?? p.headline_cppi).filter(v => v != null);
+      const highs = closes;
+      const lows = closes;
       if (highs.length < 1) {
         ctx.fillStyle = "#89a0b5";
         ctx.font = "13px sans-serif";
@@ -573,27 +593,27 @@
         ctx.globalAlpha = 1;
       }
 
+      const linePts = [];
       bars.forEach((p) => {
         const ts = parseTs(p);
         const close = p.close ?? p.headline_cppi;
         if (ts == null || close == null) return;
-        const open = p.open ?? close;
-        const high = p.high ?? close;
-        const low = p.low ?? close;
-        const x = xAt(ts + stepMs / 2);
-        const up = close >= open;
-        ctx.strokeStyle = up ? "#3dd68c" : "#ff5d73";
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x, yAt(high));
-        ctx.lineTo(x, yAt(low));
-        ctx.stroke();
-        const top = yAt(Math.max(open, close));
-        const bot = yAt(Math.min(open, close));
-        const h = Math.max(1, bot - top);
-        ctx.fillRect(x - bodyW / 2, top, bodyW, h);
+        linePts.push({x: xAt(ts + stepMs / 2), y: yAt(close), v: close});
       });
+      if (linePts.length) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#7cb8ff";
+        ctx.beginPath();
+        linePts.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        const end = linePts[linePts.length - 1];
+        ctx.fillStyle = end.v > 0.02 ? "#3dd68c" : end.v < -0.02 ? "#ff5d73" : "#7cb8ff";
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillText(end.v.toFixed(3), 8, end.y + 4);
+      }
     }
 
     function apply(payload) {
@@ -645,8 +665,12 @@
     async function pushSettings() {
       const symbol = $("symbol").value;
       const maxDte = $("maxDte").value;
+      const otmPoints = $("otmPoints").value;
       $("deltaNote").textContent = "설정을 모든 화면에 반영하는 중…";
-      const res = await fetch(`/api/settings?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}`, {method: "POST"});
+      const res = await fetch(
+        `/api/settings?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}&otm_points=${otmPoints}`,
+        {method: "POST"},
+      );
       const data = await res.json();
       if (!res.ok) {
         $("summary").innerHTML = `<span class="error">${data.detail || "settings failed"}</span>`;
@@ -656,6 +680,7 @@
     }
     $("symbol").onchange = pushSettings;
     $("maxDte").onchange = pushSettings;
+    $("otmPoints").onchange = pushSettings;
     $("copy").onclick = async () => {
       const url = location.href;
       try { await navigator.clipboard.writeText(url); $("share").textContent = "링크 복사됨"; }

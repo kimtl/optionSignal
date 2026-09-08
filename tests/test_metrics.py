@@ -145,6 +145,48 @@ def test_build_report_put_heavy():
     assert report.session_surge_gap is not None and report.session_surge_gap < 0
 
 
+def test_select_near_otm_by_points_uses_atm_strike_out_to_n_points():
+    from optionsignal.metrics import select_near_otm
+
+    spot = 24712.0
+    quotes = []
+    for strike in range(24400, 25025, 25):
+        quotes.append(quote("call", strike, 10.0, volume=5))
+        quotes.append(quote("put", strike, 10.0, volume=5))
+    calls, puts = select_near_otm(quotes, spot, band=0.08, points=100)
+    # ATM strike is 24700; calls run 24700..24800, puts 24625..24700.
+    assert [q.strike for q in calls] == [24700, 24725, 24750, 24775, 24800]
+    assert [q.strike for q in puts] == [24625, 24650, 24675, 24700]
+    calls200, puts200 = select_near_otm(quotes, spot, band=0.08, points=200)
+    assert max(q.strike for q in calls200) == 24900
+    assert min(q.strike for q in puts200) == 24525
+    # points=None or 0 falls back to the percent band.
+    band_calls, band_puts = select_near_otm(quotes, spot, band=0.08, points=0)
+    assert band_calls and band_puts
+    assert max(q.strike for q in band_calls) == 25000
+
+
+def test_build_report_points_mode_reports_strike_range():
+    quotes = []
+    for strike in range(24400, 25025, 25):
+        quotes.append(quote("call", strike, 10.0, volume=50 if strike >= 24700 else 5))
+        quotes.append(quote("put", strike, 10.0, volume=5))
+    chain = OptionChain(
+        symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+        asof=NOW, quotes=quotes, multiplier=20, source="test",
+    )
+    report = build_report(chain, otm_points=150)
+    assert report.otm_points == 150
+    assert report.headline_call_strikes == [24700, 24850]
+    assert report.headline_put_strikes == [24575, 24700]
+    assert report.headline_cppi is not None and report.headline_cppi > 0.5
+    payload = report.to_dict()
+    assert payload["otm_points"] == 150
+    band_report = build_report(chain, otm_points=0)
+    assert band_report.otm_points is None
+    assert band_report.headline_call_strikes[1] == 25000
+
+
 def test_bias_thresholds():
     bias, score, ko, en = bias_from_metrics(0.4, 0.04, 10)
     assert bias == "call" and score == 2

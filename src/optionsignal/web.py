@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .collector import DEFAULT_INTERVAL, LiveHub
 from .fetch import DEFAULT_SYMBOL
-from .settings import default_interval, default_symbol
+from .settings import default_interval, default_otm_points, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
 from .store import BAR_HISTORY_LIMIT, RAW_HISTORY_LIMIT, aggregate_bars, compact_point, load_history
 
@@ -32,12 +32,14 @@ def create_app(
     interval: int | None = None,
     start_collector: bool = True,
     band: float = 0.08,
+    otm_points: float | None = None,
 ) -> FastAPI:
     hub = LiveHub(
         symbol=symbol or default_symbol(),
         max_dte=max_dte,
         band=band,
         interval=interval if interval is not None else default_interval(),
+        otm_points=otm_points if otm_points is not None else default_otm_points(),
     )
 
     @asynccontextmanager
@@ -125,12 +127,16 @@ def create_app(
         symbol: str | None = Query(default=None),
         max_dte: int | None = Query(default=None, ge=0, le=7),
         interval: int | None = Query(default=None, ge=1, le=300),
+        otm_points: float | None = Query(default=None, ge=0, le=5000),
     ):
         hub = _hub()
         if symbol:
             hub.symbol = symbol.upper()
         if max_dte is not None:
             hub.max_dte = max_dte
+        if otm_points is not None:
+            # 0 means "back to the percent band".
+            hub.otm_points = otm_points if otm_points > 0 else None
         if interval is not None:
             hub.interval = interval
         try:

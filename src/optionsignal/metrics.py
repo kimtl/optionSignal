@@ -98,6 +98,51 @@ def is_near_otm(quote: OptionQuote, spot: float, band: float) -> bool:
     return quote.strike <= spot * 1.005
 
 
+def atm_strike(quotes: Iterable[OptionQuote], spot: float) -> float | None:
+    strikes = [q.strike for q in quotes if q.strike > 0]
+    if not strikes or spot <= 0:
+        return None
+    return min(strikes, key=lambda k: abs(k - spot))
+
+
+def select_near_otm(
+    quotes: Iterable[OptionQuote],
+    spot: float,
+    band: float,
+    points: float | None = None,
+) -> tuple[list[OptionQuote], list[OptionQuote]]:
+    """Pick the call and put sides used for CPPI.
+
+    points=None: the percent band (ATM to slightly OTM, up to ``band`` away).
+    points=N: strikes from the ATM strike out to N index points on each side,
+    so 100/150/200 points on NQ mean the same thing on every trading day.
+    """
+    quotes = list(quotes)
+    if points is None or points <= 0:
+        calls = [q for q in quotes if q.right == "call" and is_near_otm(q, spot, band)]
+        puts = [q for q in quotes if q.right == "put" and is_near_otm(q, spot, band)]
+        return calls, puts
+    atm = atm_strike(quotes, spot)
+    if atm is None:
+        return [], []
+    calls = [
+        q for q in quotes
+        if q.right == "call" and q.mid and q.mid > 0 and atm <= q.strike <= spot + points
+    ]
+    puts = [
+        q for q in quotes
+        if q.right == "put" and q.mid and q.mid > 0 and spot - points <= q.strike <= atm
+    ]
+    return calls, puts
+
+
+def strike_range(quotes: Iterable[OptionQuote]) -> list[float] | None:
+    strikes = [q.strike for q in quotes]
+    if not strikes:
+        return None
+    return [min(strikes), max(strikes)]
+
+
 def volume_premium(quotes: Iterable[OptionQuote]) -> float:
     total = 0.0
     for quote in quotes:
