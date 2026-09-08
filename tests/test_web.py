@@ -155,3 +155,28 @@ def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):
         res = client.post("/api/tick")
         assert res.status_code == 503
         assert "연결" in res.json()["detail"]
+
+
+def test_chain_endpoint_returns_rows(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", lambda **kwargs: _chain())
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert 'id="tabChain"' in home.text
+        assert 'id="chainRows"' in home.text
+        empty = client.get("/api/chain")
+        assert empty.status_code == 200
+        assert empty.json()["rows"] == []
+        client.post("/api/tick")
+        res = client.get("/api/chain")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["spot"] == 100.0
+        assert body["atm"] == 100
+        strikes = [r["strike"] for r in body["rows"]]
+        assert strikes == [96, 98, 100, 102, 104]
+        atm_row = body["rows"][2]
+        assert atm_row["call"]["volume"] == 80
+        assert atm_row["put"]["open_interest"] == 40
+        assert atm_row["call"]["delta"] is not None

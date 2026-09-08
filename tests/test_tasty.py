@@ -174,3 +174,52 @@ def test_snapshot_raises_not_ready_before_chain():
     feed = TastyFeed(symbol="/NQ")
     with pytest.raises(FeedNotReady, match="체인"):
         feed.snapshot()
+
+
+def test_stream_events_fill_delta_and_day_volume():
+    from types import SimpleNamespace
+
+    from optionsignal.tasty import TastyFeed
+
+    feed = TastyFeed(symbol="/NQ")
+    feed.underlying_symbol = "/NQU26:XCME"
+    feed.contracts = [LiveContract(date(2026, 9, 8), "put", 24700, "./NQU26P24700", 12)]
+    feed._apply_quote(SimpleNamespace(event_symbol="./NQU26P24700", bid_price=24, ask_price=26, bid_size=3, ask_size=4))
+    feed._apply_greeks(SimpleNamespace(event_symbol="./NQU26P24700", volatility=0.21, delta=-0.42, price=25.5))
+    feed._apply_trade(SimpleNamespace(event_symbol="./NQU26P24700", price=25.25, day_volume=1832))
+    feed._apply_trade(SimpleNamespace(event_symbol="/NQU26:XCME", price=24712.5, day_volume=500000))
+    chain = feed.snapshot()
+    put = chain.quotes[0]
+    assert put.delta == -0.42
+    assert put.volume == 1832
+    assert put.last == 25.25
+    assert put.open_interest == 12
+    assert chain.spot == 24712.5
+
+
+def test_chain_table_pairs_calls_and_puts_by_strike():
+    from optionsignal.signal import chain_table
+
+    expiry = date(2026, 9, 8)
+    quotes = [
+        quote("call", 24700, 60.0, volume=900, iv=0.20, expiry=expiry),
+        quote("put", 24700, 58.0, volume=1200, iv=0.21, expiry=expiry),
+        quote("call", 24725, 48.0, volume=300, iv=0.20, expiry=expiry),
+        quote("call", 24750, 40.0, volume=100, iv=0.20, expiry=date(2026, 9, 9)),
+    ]
+    chain = OptionChain(symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+                        asof=NOW, quotes=quotes, multiplier=20, source="tastytrade")
+    table = chain_table(chain, max_dte=0)
+    assert table["expiry"] == "2026-09-08"
+    assert table["dte"] == 0
+    assert table["atm"] == 24700
+    assert [r["strike"] for r in table["rows"]] == [24700, 24725]
+    row = table["rows"][0]
+    assert row["call"]["volume"] == 900
+    assert row["put"]["volume"] == 1200
+    assert row["put"]["open_interest"] == 1200
+    # No feed delta on these quotes, so it is modelled from IV: call ~0.5+, put = call - 1.
+    assert row["call"]["delta_source"] == "model"
+    assert 0.4 < row["call"]["delta"] < 0.7
+    assert -0.6 < row["put"]["delta"] < -0.3
+    assert table["rows"][1]["put"] is None
