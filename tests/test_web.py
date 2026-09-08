@@ -60,3 +60,55 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["ok"] is True
+        assert health.json()["source"] in {"yahoo", "tastytrade"}
+
+
+def test_live_does_not_502_when_tick_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        client.app.state.hub.error = "yahoo blocked"
+        live = client.get("/api/live")
+        assert live.status_code == 200
+        body = live.json()
+        assert body["tick"] is None
+        assert body["status"]["error"] == "yahoo blocked"
+
+
+def test_tick_nq_without_tasty_is_config_error(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.delenv("TASTYTRADE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("TASTYTRADE_REFRESH_TOKEN", raising=False)
+    app = create_app(symbol="/NQ", start_collector=False, interval=5)
+    with TestClient(app) as client:
+        res = client.post("/api/tick")
+        assert res.status_code == 400
+        assert "Yahoo" in res.json()["detail"]
+        live = client.get("/api/live")
+        assert live.status_code == 200
+        assert live.json()["status"]["error"]
+
+
+def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+
+    class Feed:
+        ready = False
+        error = None
+        contracts = []
+        _spot = None
+
+        def snapshot(self):
+            from optionsignal.tasty import FeedNotReady
+
+            raise FeedNotReady("tastytrade DXLink 연결 중입니다.")
+
+        def stop(self):
+            return None
+
+    app = create_app(symbol="/NQ", start_collector=False, interval=5)
+    with TestClient(app) as client:
+        client.app.state.hub.tasty_feed = Feed()
+        res = client.post("/api/tick")
+        assert res.status_code == 503
+        assert "연결" in res.json()["detail"]

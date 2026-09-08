@@ -97,6 +97,15 @@ def fetch_chain(
 
     Scalping polls should keep max_dte at 0 so only today's expiry is used.
     """
+    from .tasty import FeedConfigError, is_futures_root
+
+    if is_futures_root(symbol):
+        raise FeedConfigError(
+            f"{symbol} 선물옵션 체인은 Yahoo에 없습니다. "
+            "NQ 실시간은 TASTYTRADE_CLIENT_SECRET과 TASTYTRADE_REFRESH_TOKEN이 필요합니다. "
+            "지연 시세만 쓰려면 심볼을 QQQ로 바꾸세요."
+        )
+
     now = now or datetime.now(tz=NY)
     today = now.astimezone(NY).date()
     ticker = yf.Ticker(symbol)
@@ -125,7 +134,11 @@ def fetch_chain(
             break
 
     if not quotes:
-        raise RuntimeError(f"No option quotes returned for {symbol}")
+        expiries = ", ".join(list(ticker.options)[:6]) or "없음"
+        raise RuntimeError(
+            f"{symbol} 0DTE 옵션을 못 읽었습니다 (오늘 {today.isoformat()}, DTE≤{max_dte}). "
+            f"Yahoo 만기: {expiries}. 주말이거나 Yahoo가 이 서버 IP를 막았을 수 있습니다."
+        )
 
     return OptionChain(
         symbol=symbol.upper().lstrip("^"),

@@ -108,6 +108,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         interval=args.interval,
         start_collector=True,
     )
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app.state.hub.port = args.port
     print(f"optionSignal  http://{args.host}:{args.port}")
     if args.host == "0.0.0.0":

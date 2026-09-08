@@ -45,6 +45,8 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 
 키가 있으면 보드가 자동으로 `/NQ` 실시간으로 뜹니다. Railway Variables에도 똑같이 넣으면 됩니다.
 
+화면이 **tastytrade 연결 중**에서 멈추면, 예전 버전은 `/NQ`를 선물 계약처럼 조회해서 기초가격이 안 잡힌 채 DXLink만 기다리고 있었습니다. 지금은 최근월물(`/NQU6` 같은 심볼)을 찾고, REST 호가로 보드를 먼저 찍은 뒤 DXLink를 붙입니다. 배포 후 `/health`의 `phase`, `contracts`, `quoted`, `error`를 보면 됩니다.
+
 ## Railway에 올리기
 
 가능합니다. 이 저장소를 Railway 서비스 하나에 붙이면 됩니다. 인스턴스는 **1개**만 쓰세요. 복제본을 늘리면 분봉을 두 번 찍고 화면이 갈라집니다.
@@ -67,6 +69,20 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 | `TASTYTRADE_REFRESH_TOKEN` | tastytrade refresh token |
 
 Yahoo가 데이터센터 IP를 막으면 보드에 에러가 뜹니다. 키가 있으면 Yahoo를 쓰지 않습니다.
+
+## `/api/tick` 502
+
+Railway 로그의 `POST /api/tick 502 Bad Gateway` 는 게이트웨이가 죽은 게 아니라 **시세 조회가 실패한 것**입니다. 「지금 찍기」는 선택입니다. 서버가 이미 `OPTIONSIGNAL_INTERVAL`마다 찍습니다.
+
+화면 위 요약 칸과 `/health`의 `error`에 이유가 뜹니다.
+
+| 상황 | HTTP | 할 일 |
+| --- | --- | --- |
+| `/NQ`인데 tasty 키가 없음 | 400 | Variables에 `TASTYTRADE_CLIENT_SECRET` + `TASTYTRADE_REFRESH_TOKEN` 을 넣거나 심볼을 QQQ |
+| tasty DXLink 연결 중 | 503 | 몇 초 기다리면 보드가 자동으로 찍힘 |
+| 키/권한/0DTE 없음, Yahoo 차단 | 502 | `TASTYTRADE_IS_TEST=false` 인지, NQ 선물옵션 실시간 권한이 있는지, 오늘 만기가 있는지 확인 |
+
+샌드박스(`TASTYTRADE_IS_TEST=true`)는 실전 호가가 아닙니다.
 
 ## 스캘핑에서 볼 숫자
 
