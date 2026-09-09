@@ -263,14 +263,14 @@ def test_build_report_computes_every_cppi_variant():
     report = build_report(chain)
     assert report.moneyness_band == 0.03
     v = report.cppi_variants
-    assert set(v) == {"b3", "p100", "p150", "p200", "p300"}
+    assert set(v) == {"all", "p100", "p150", "p200", "p300"}
     assert v["p100"]["call_strikes"] == [24700, 24800]
     assert v["p300"]["call_strikes"] == [24700, 25000]
-    assert v["b3"]["band"] == 0.03 and v["b3"]["points"] is None
+    assert v["all"]["band"] is None and v["all"]["points"] is None
+    assert v["all"]["call_strikes"] == [24000, 25400] and v["all"]["put_strikes"] == [24000, 25400]
     assert v["p100"]["cppi"] > v["p300"]["cppi"]  # far calls have little volume, diluting p300
-    assert v["b3"]["bias"] in {"call", "mild_call", "neutral", "mild_put", "put"}
-    # headline (band default) equals the b3 variant
-    assert report.headline_cppi == v["b3"]["cppi"]
+    assert v["all"]["bias"] in {"call", "mild_call", "neutral", "mild_put", "put"}
+    assert v["all"]["call_count"] == 57 and v["all"]["put_count"] == 57
 
 
 def test_cppi_variant_reports_rule_window_and_counts():
@@ -283,11 +283,9 @@ def test_cppi_variant_reports_rule_window_and_counts():
         asof=NOW, quotes=quotes, multiplier=20, source="test",
     )
     v = build_report(chain).cppi_variants
-    b3 = v["b3"]
-    assert b3["call_window"] == [24700 * 0.995, 24700 * 1.03]
-    assert b3["put_window"] == [24700 * 0.97, 24700 * 1.005]
-    assert b3["call_strikes"] == [24600, 25400] and b3["put_strikes"] == [24000, 24800]
-    assert b3["call_count"] == 33 and b3["put_count"] == 33
+    every = v["all"]
+    assert every["call_window"] == [24000, 25400] and every["put_window"] == [24000, 25400]
+    assert every["call_count"] == 57 and every["put_count"] == 57
     p100 = v["p100"]
     assert p100["call_window"] == [24700, 24800] and p100["put_window"] == [24600, 24700]
     assert p100["call_count"] == 5 and p100["put_count"] == 5

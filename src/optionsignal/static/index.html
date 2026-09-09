@@ -330,7 +330,7 @@
         <div class="controls" style="margin:6px 0 12px">
           <label class="sub">선정
             <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지 (이 화면에만 적용)">
-              <option value="b3">등가격 ±3% 밴드</option>
+              <option value="all">모든 행사가</option>
               <option value="p100">등가격 ±100포</option>
               <option value="p150">등가격 ±150포</option>
               <option value="p200">등가격 ±200포</option>
@@ -564,8 +564,8 @@
     // ---- per-viewer CPPI selection ------------------------------------
     const CPPI_SEL_KEY = "optionsignal.cppiSel";
     const CPPI_LINE_KEY = "optionsignal.cppiLine";
-    const CPPI_LABELS = {b3: "등가격 ±3% 밴드", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
-    let cppiSel = "b3";
+    const CPPI_LABELS = {all: "모든 행사가", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
+    let cppiSel = "all";
     try { const v = localStorage.getItem(CPPI_SEL_KEY); if (v && CPPI_LABELS[v]) cppiSel = v; } catch {}
     let showCppiLine = true;
     try { showCppiLine = localStorage.getItem(CPPI_LINE_KEY) !== "0"; } catch {}
@@ -646,14 +646,15 @@
       $("putPrem").textContent = fmt(p, 0);
       const cs = tick.headline_call_strikes;
       const ps = tick.headline_put_strikes;
-      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : `등가격 ±${fmt((tick.moneyness_band || 0.03) * 100, 0)}% 밴드`;
+      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : (tick.moneyness_band ? `등가격 ±${fmt(tick.moneyness_band * 100, 0)}% 밴드` : "모든 행사가");
       const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
       const vsel = variantOf(rawTick, "close") || {};
       const cnt = (n) => n == null ? "" : ` ${n}개`;
       let line = `${rule}`;
-      if (vsel.call_window && vsel.put_window) line += ` · 규칙 범위 콜 ${rng(vsel.call_window)} · 풋 ${rng(vsel.put_window)}`;
+      if (cppiSel === "all" && vsel.call_window) line += ` · 체인 행사가 ${rng(vsel.call_window)}`;
+      else if (vsel.call_window && vsel.put_window) line += ` · 규칙 범위 콜 ${rng(vsel.call_window)} · 풋 ${rng(vsel.put_window)}`;
       line += ` · 실제 합산 콜 ${rng(cs)}${cnt(vsel.call_count)} · 풋 ${rng(ps)}${cnt(vsel.put_count)}`;
-      const narrow = vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
+      const narrow = cppiSel !== "all" && vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
       if (narrow) line += " · 규칙 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
       $("strikeLine").textContent = line;
       $("delta").textContent = signed(tick.cppi_delta_1m, 3);
@@ -1329,7 +1330,7 @@
     $("maxDte").onchange = pushSettings;
     $("otmPoints").value = cppiSel;
     $("otmPoints").onchange = () => {
-      cppiSel = CPPI_LABELS[$("otmPoints").value] ? $("otmPoints").value : "b3";
+      cppiSel = CPPI_LABELS[$("otmPoints").value] ? $("otmPoints").value : "all";
       try { localStorage.setItem(CPPI_SEL_KEY, cppiSel); } catch {}
       if (lastTick) paintTick(lastTick);
       paintTape(points);
