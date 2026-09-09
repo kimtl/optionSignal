@@ -145,8 +145,8 @@ def test_build_report_put_heavy():
     assert report.session_surge_gap is not None and report.session_surge_gap < 0
 
 
-def test_select_near_otm_by_points_uses_one_window_for_calls_and_puts():
-    from optionsignal.metrics import select_near_otm, selection_window
+def test_select_near_otm_by_points_is_otm_only_and_mirrored():
+    from optionsignal.metrics import otm_windows, select_near_otm, selection_window
 
     spot = 24712.0
     quotes = []
@@ -154,19 +154,35 @@ def test_select_near_otm_by_points_uses_one_window_for_calls_and_puts():
         quotes.append(quote("call", strike, 10.0, volume=5))
         quotes.append(quote("put", strike, 10.0, volume=5))
     calls, puts = select_near_otm(quotes, spot, band=0.08, points=100)
-    # spot ±100 → 24612..24812 for BOTH sides (24625..24800 on a 25-step chain).
-    expected = [24625, 24650, 24675, 24700, 24725, 24750, 24775, 24800]
-    assert [q.strike for q in calls] == expected
-    assert [q.strike for q in puts] == expected
+    # ATM strike 24700 and every ITM quote are dropped on both sides:
+    # calls strictly above spot out to 24812, puts strictly below spot down to 24612.
+    assert [q.strike for q in calls] == [24725, 24750, 24775, 24800]
+    assert [q.strike for q in puts] == [24625, 24650, 24675]
+    assert otm_windows(spot, 0.08, 100) == ((24712.0, 24812.0), (24612.0, 24712.0))
     assert selection_window(spot, 0.08, 100) == (24612.0, 24812.0)
     calls200, puts200 = select_near_otm(quotes, spot, band=0.08, points=200)
-    assert [q.strike for q in calls200] == [q.strike for q in puts200]
-    assert min(q.strike for q in calls200) == 24525 and max(q.strike for q in calls200) == 24900
-    # points=None or 0 falls back to the percent band, also symmetric.
+    assert min(q.strike for q in calls200) == 24725 and max(q.strike for q in calls200) == 24900
+    assert min(q.strike for q in puts200) == 24525 and max(q.strike for q in puts200) == 24675
+    # points=None or 0 falls back to the percent band, still OTM only.
     band_calls, band_puts = select_near_otm(quotes, spot, band=0.08, points=0)
-    assert [q.strike for q in band_calls] == [q.strike for q in band_puts]
-    assert max(q.strike for q in band_calls) == 25000 and min(q.strike for q in band_puts) == 24400
-    assert selection_window(spot, 0.08) == (spot * 0.92, spot * 1.08)
+    assert min(q.strike for q in band_calls) == 24725 and max(q.strike for q in band_calls) == 25000
+    assert min(q.strike for q in band_puts) == 24400 and max(q.strike for q in band_puts) == 24675
+
+
+def test_select_all_otm_excludes_atm_and_itm():
+    from optionsignal.metrics import select_all_otm
+
+    quotes = []
+    for strike in (96, 98, 100, 102, 104):
+        quotes.append(quote("call", strike, 1.0, volume=1))
+        quotes.append(quote("put", strike, 1.0, volume=1))
+    calls, puts = select_all_otm(quotes, 100.0)
+    assert [q.strike for q in calls] == [102, 104]
+    assert [q.strike for q in puts] == [96, 98]
+    # spot between strikes: the nearest strike is ATM and still excluded.
+    calls, puts = select_all_otm(quotes, 100.6)
+    assert [q.strike for q in calls] == [102, 104]
+    assert [q.strike for q in puts] == [96, 98]
 
 
 def test_build_report_points_mode_reports_strike_range():
@@ -180,8 +196,8 @@ def test_build_report_points_mode_reports_strike_range():
     )
     report = build_report(chain, otm_points=150)
     assert report.otm_points == 150
-    assert report.headline_call_strikes == [24575, 24850]
-    assert report.headline_put_strikes == [24575, 24850]
+    assert report.headline_call_strikes == [24725, 24850]
+    assert report.headline_put_strikes == [24575, 24675]
     assert report.headline_cppi is not None and report.headline_cppi > 0.5
     payload = report.to_dict()
     assert payload["otm_points"] == 150
@@ -267,13 +283,13 @@ def test_build_report_computes_every_cppi_variant():
     assert report.moneyness_band == 0.03
     v = report.cppi_variants
     assert set(v) == {"all", "p100", "p150", "p200", "p300"}
-    assert v["p100"]["call_strikes"] == [24625, 24800] and v["p100"]["put_strikes"] == [24625, 24800]
-    assert v["p300"]["call_strikes"] == [24425, 25000] and v["p300"]["put_strikes"] == [24425, 25000]
+    assert v["p100"]["call_strikes"] == [24725, 24800] and v["p100"]["put_strikes"] == [24625, 24675]
+    assert v["p300"]["call_strikes"] == [24725, 25000] and v["p300"]["put_strikes"] == [24425, 24675]
     assert v["all"]["band"] is None and v["all"]["points"] is None
-    assert v["all"]["call_strikes"] == [24000, 25400] and v["all"]["put_strikes"] == [24000, 25400]
+    assert v["all"]["call_strikes"] == [24725, 25400] and v["all"]["put_strikes"] == [24000, 24675]
     assert v["p100"]["cppi"] > v["p300"]["cppi"]  # far calls have little volume, diluting p300
     assert v["all"]["bias"] in {"call", "mild_call", "neutral", "mild_put", "put"}
-    assert v["all"]["call_count"] == 57 and v["all"]["put_count"] == 57
+    assert v["all"]["call_count"] == 28 and v["all"]["put_count"] == 28
 
 
 def test_cppi_variant_reports_rule_window_and_counts():
@@ -287,8 +303,9 @@ def test_cppi_variant_reports_rule_window_and_counts():
     )
     v = build_report(chain).cppi_variants
     every = v["all"]
-    assert every["call_window"] == [24000, 25400] and every["put_window"] == [24000, 25400]
-    assert every["call_count"] == 57 and every["put_count"] == 57
+    assert every["call_window"] == [24700, 25400] and every["put_window"] == [24000, 24700]
+    assert every["call_count"] == 28 and every["put_count"] == 28
     p100 = v["p100"]
-    assert p100["call_window"] == [24600, 24800] and p100["put_window"] == [24600, 24800]
-    assert p100["call_count"] == 9 and p100["put_count"] == 9
+    assert p100["call_window"] == [24700, 24800] and p100["put_window"] == [24600, 24700]
+    # spot sits on the 24700 strike: it is ATM and excluded, so 4 strikes a side.
+    assert p100["call_count"] == 4 and p100["put_count"] == 4

@@ -14,8 +14,9 @@ from .metrics import (
     premium_ratio,
     risk_reversal_iv,
     sane_iv,
+    otm_windows,
+    select_all_otm,
     select_near_otm,
-    selection_window,
     session_date,
     strike_range,
     total_volume,
@@ -99,14 +100,15 @@ def _cppi_variant(
 ) -> dict:
     """CPPI and premiums for one selection rule, plus the bias text it implies."""
     if points is None and band is None:
-        calls = [q for q in quotes if q.right == "call" and q.mid and q.mid > 0]
-        puts = [q for q in quotes if q.right == "put" and q.mid and q.mid > 0]
+        calls, puts = select_all_otm(quotes, spot)
         span = strike_range(quotes)
-        call_window = put_window = span
+        call_window = [spot, span[1]] if span else None
+        put_window = [span[0], spot] if span else None
     else:
         b = band if band is not None else DEFAULT_BAND
         calls, puts = select_near_otm(quotes, spot, b, points=points)
-        call_window = put_window = list(selection_window(spot, b, points))
+        cw, pw = otm_windows(spot, b, points)
+        call_window, put_window = list(cw), list(pw)
     call_prem = volume_premium(calls)
     put_prem = volume_premium(puts)
     cppi = call_put_premium_imbalance(call_prem, put_prem)
