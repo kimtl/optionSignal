@@ -652,7 +652,7 @@
       const cnt = (n) => n == null ? "" : ` ${n}개`;
       let line = `${rule}`;
       if (cppiSel === "all" && vsel.call_window) line += ` · 체인 행사가 ${rng(vsel.call_window)}`;
-      else if (vsel.call_window && vsel.put_window) line += ` · 규칙 범위 콜 ${rng(vsel.call_window)} · 풋 ${rng(vsel.put_window)}`;
+      else if (vsel.call_window) line += ` · 콜·풋 공통 범위 ${rng(vsel.call_window)}`;
       line += ` · 실제 합산 콜 ${rng(cs)}${cnt(vsel.call_count)} · 풋 ${rng(ps)}${cnt(vsel.put_count)}`;
       const narrow = cppiSel !== "all" && vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
       if (narrow) line += " · 규칙 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
