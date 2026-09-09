@@ -78,13 +78,14 @@ def test_settings_switches_otm_points(monkeypatch, tmp_path):
         assert "등가격 ±100포" in home.text
         base = client.post("/api/tick").json()["tick"]
         assert base["otm_points"] is None
-        assert base["headline_call_strikes"] == [100, 104]
+        assert base["headline_call_strikes"] == [96, 104]
+        assert base["headline_put_strikes"] == [96, 104]
         res = client.post("/api/settings?otm_points=2")
         assert res.status_code == 200
         tick = res.json()["tick"]
         assert tick["otm_points"] == 2
-        assert tick["headline_call_strikes"] == [100, 102]
-        assert tick["headline_put_strikes"] == [98, 100]
+        assert tick["headline_call_strikes"] == [98, 102]
+        assert tick["headline_put_strikes"] == [98, 102]
         assert res.json()["status"]["otm_points"] == 2
         back = client.post("/api/settings?otm_points=0").json()
         assert back["tick"]["otm_points"] is None

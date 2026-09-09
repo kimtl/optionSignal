@@ -228,17 +228,17 @@ def test_load_option_rows_skips_backfill_and_filters_expiry(tmp_path, monkeypatc
 def test_aggregate_bars_carries_cppi_variants_open_and_close():
     from optionsignal.store import aggregate_bars, compact_point
 
-    v = lambda c, call, put: {"b3": {"cppi": c, "call_premium": call, "put_premium": put}}  # noqa: E731
+    v = lambda c, call, put: {"all": {"cppi": c, "call_premium": call, "put_premium": put}}  # noqa: E731
     pts = [
         {"asof": "2026-09-09T10:00:05+00:00", "headline_cppi": 0.1, "futures_price": 1, "cppi_variants": v(0.1, 100, 80)},
         {"asof": "2026-09-09T10:00:35+00:00", "headline_cppi": 0.2, "futures_price": 1, "cppi_variants": v(0.2, 130, 80)},
     ]
     bars = aggregate_bars(pts)
     assert len(bars) == 1
-    assert bars[0]["cppi_variants"]["b3"]["cppi"] == 0.2
-    assert bars[0]["cppi_variants_open"]["b3"]["call_premium"] == 100
+    assert bars[0]["cppi_variants"]["all"]["cppi"] == 0.2
+    assert bars[0]["cppi_variants_open"]["all"]["call_premium"] == 100
     slim = compact_point(bars[0])
-    assert slim["cppi_variants"] == {"b3": [0.2, 130, 80]}
-    assert slim["cppi_variants_open"] == {"b3": [0.1, 100, 80]}
+    assert slim["cppi_variants"] == {"all": [0.2, 130, 80]}
+    assert slim["cppi_variants_open"] == {"all": [0.1, 100, 80]}
     five = aggregate_bars(bars, minutes=5)
-    assert compact_point(five[0])["cppi_variants_open"] == {"b3": [0.1, 100, 80]}
+    assert compact_point(five[0])["cppi_variants_open"] == {"all": [0.1, 100, 80]}

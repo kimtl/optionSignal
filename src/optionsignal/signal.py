@@ -15,6 +15,7 @@ from .metrics import (
     risk_reversal_iv,
     sane_iv,
     select_near_otm,
+    selection_window,
     session_date,
     strike_range,
     total_volume,
@@ -30,8 +31,9 @@ DEFAULT_BAND = 0.03
 DEFAULT_WING_PCT = 0.03
 # Every CPPI selection the board offers is computed on each tick so each viewer can pick
 # their own without changing anything on the server: (key, moneyness band, points from ATM).
+# ("all", None, None) = every quoted strike of the 0DTE chain, no moneyness filter.
 CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
-    ("b3", 0.03, None),
+    ("all", None, None),
     ("p100", None, 100.0),
     ("p150", None, 150.0),
     ("p200", None, 200.0),
@@ -96,15 +98,15 @@ def _cppi_variant(
     rr: float | None,
 ) -> dict:
     """CPPI and premiums for one selection rule, plus the bias text it implies."""
-    calls, puts = select_near_otm(quotes, spot, band if band is not None else DEFAULT_BAND, points=points)
-    if points is not None:
-        atm = atm_strike(quotes, spot)
-        call_window = [atm, spot + points] if atm is not None else None
-        put_window = [spot - points, atm] if atm is not None else None
+    if points is None and band is None:
+        calls = [q for q in quotes if q.right == "call" and q.mid and q.mid > 0]
+        puts = [q for q in quotes if q.right == "put" and q.mid and q.mid > 0]
+        span = strike_range(quotes)
+        call_window = put_window = span
     else:
         b = band if band is not None else DEFAULT_BAND
-        call_window = [spot * 0.995, spot * (1 + b)]
-        put_window = [spot * (1 - b), spot * 1.005]
+        calls, puts = select_near_otm(quotes, spot, b, points=points)
+        call_window = put_window = list(selection_window(spot, b, points))
     call_prem = volume_premium(calls)
     put_prem = volume_premium(puts)
     cppi = call_put_premium_imbalance(call_prem, put_prem)
