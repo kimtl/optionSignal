@@ -116,15 +116,24 @@ def in_moneyness_band(strike: float, spot: float, band: float) -> bool:
     return (1.0 - band) * spot <= strike <= (1.0 + band) * spot
 
 
-def is_near_otm(quote: OptionQuote, spot: float, band: float) -> bool:
-    """Quoted strikes inside the symmetric band around spot.
+def is_otm(quote: OptionQuote, spot: float, atm: float | None) -> bool:
+    """Strictly out-of-the-money and not the ATM strike: calls above spot, puts below.
 
-    Calls and puts are judged against the same window on purpose: comparing
-    call premium from one strike range with put premium from another skews CPPI.
+    ITM and ATM quotes are excluded from CPPI so that call and put premium are
+    compared on mirror-image strike sets (spot 100 → calls 101+, puts 99-).
     """
-    if quote.mid is None or quote.mid <= 0:
+    if quote.mid is None or quote.mid <= 0 or spot <= 0:
         return False
-    return in_moneyness_band(quote.strike, spot, band)
+    if atm is not None and quote.strike == atm:
+        return False
+    if quote.right == "call":
+        return quote.strike > spot
+    return quote.strike < spot
+
+
+def is_near_otm(quote: OptionQuote, spot: float, band: float, atm: float | None = None) -> bool:
+    """OTM (not ATM) quotes within ``band`` percent of spot."""
+    return is_otm(quote, spot, atm) and in_moneyness_band(quote.strike, spot, band)
 
 
 def atm_strike(quotes: Iterable[OptionQuote], spot: float) -> float | None:
@@ -140,30 +149,50 @@ def select_near_otm(
     band: float,
     points: float | None = None,
 ) -> tuple[list[OptionQuote], list[OptionQuote]]:
-    """Pick the call and put sides used for CPPI from one shared strike window.
+    """Pick the call and put sides used for CPPI: OTM only, mirror-image windows.
 
-    points=None: strikes within ``band`` (percent) of spot on both sides.
-    points=N: strikes from spot-N to spot+N, so 100/150/200 points on NQ mean
-    the same thing on every trading day.
-    Both sides see the identical window (spot 100, N=20 → calls 80~120 and
-    puts 80~120); ITM quotes on either side are included.
+    points=None: OTM strikes within ``band`` percent of spot.
+    points=N: OTM strikes out to N index points, so 100/150/200 points on NQ
+    mean the same thing on every trading day.
+    Spot 100, N=20 → calls 101~120, puts 80~99. The ATM strike and every ITM
+    quote are left out on both sides.
     """
     quotes = list(quotes)
-    if points is None or points <= 0:
-        calls = [q for q in quotes if q.right == "call" and is_near_otm(q, spot, band)]
-        puts = [q for q in quotes if q.right == "put" and is_near_otm(q, spot, band)]
-        return calls, puts
-    lo, hi = selection_window(spot, band, points)
-    calls = [q for q in quotes if q.right == "call" and q.mid and q.mid > 0 and lo <= q.strike <= hi]
-    puts = [q for q in quotes if q.right == "put" and q.mid and q.mid > 0 and lo <= q.strike <= hi]
+    atm = atm_strike(quotes, spot)
+    (c_lo, c_hi), (p_lo, p_hi) = otm_windows(spot, band, points)
+    calls = [q for q in quotes if q.right == "call" and is_otm(q, spot, atm) and c_lo < q.strike <= c_hi]
+    puts = [q for q in quotes if q.right == "put" and is_otm(q, spot, atm) and p_lo <= q.strike < p_hi]
     return calls, puts
 
 
-def selection_window(spot: float, band: float, points: float | None = None) -> tuple[float, float]:
-    """The [low, high] strike window a CPPI rule covers, identical for calls and puts."""
+def select_all_otm(
+    quotes: Iterable[OptionQuote],
+    spot: float,
+) -> tuple[list[OptionQuote], list[OptionQuote]]:
+    """Every quoted OTM call and put of the chain (ATM/ITM excluded), no distance cap."""
+    quotes = list(quotes)
+    atm = atm_strike(quotes, spot)
+    calls = [q for q in quotes if q.right == "call" and is_otm(q, spot, atm)]
+    puts = [q for q in quotes if q.right == "put" and is_otm(q, spot, atm)]
+    return calls, puts
+
+
+def otm_windows(
+    spot: float, band: float, points: float | None = None
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """(call_window, put_window) a CPPI rule covers: (spot, spot+N] and [spot-N, spot).
+
+    The spot-side edge is exclusive; the two windows are mirror images.
+    """
     if points is None or points <= 0:
-        return spot * (1 - band), spot * (1 + band)
-    return spot - points, spot + points
+        return (spot, spot * (1 + band)), (spot * (1 - band), spot)
+    return (spot, spot + points), (spot - points, spot)
+
+
+def selection_window(spot: float, band: float, points: float | None = None) -> tuple[float, float]:
+    """Whole [low, high] strike span a CPPI rule covers across both sides."""
+    (_, hi), (lo, _) = otm_windows(spot, band, points)
+    return lo, hi
 
 
 def strike_range(quotes: Iterable[OptionQuote]) -> list[float] | None:

@@ -330,7 +330,7 @@
         <div class="controls" style="margin:6px 0 12px">
           <label class="sub">선정
             <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지 (이 화면에만 적용)">
-              <option value="all">모든 행사가</option>
+              <option value="all">모든 외가격</option>
               <option value="p100">등가격 ±100포</option>
               <option value="p150">등가격 ±150포</option>
               <option value="p200">등가격 ±200포</option>
@@ -564,7 +564,7 @@
     // ---- per-viewer CPPI selection ------------------------------------
     const CPPI_SEL_KEY = "optionsignal.cppiSel";
     const CPPI_LINE_KEY = "optionsignal.cppiLine";
-    const CPPI_LABELS = {all: "모든 행사가", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
+    const CPPI_LABELS = {all: "모든 외가격", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
     let cppiSel = "all";
     try { const v = localStorage.getItem(CPPI_SEL_KEY); if (v && CPPI_LABELS[v]) cppiSel = v; } catch {}
     let showCppiLine = true;
@@ -646,13 +646,12 @@
       $("putPrem").textContent = fmt(p, 0);
       const cs = tick.headline_call_strikes;
       const ps = tick.headline_put_strikes;
-      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : (tick.moneyness_band ? `등가격 ±${fmt(tick.moneyness_band * 100, 0)}% 밴드` : "모든 행사가");
+      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : (tick.moneyness_band ? `등가격 ±${fmt(tick.moneyness_band * 100, 0)}% 밴드` : "모든 외가격");
       const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
       const vsel = variantOf(rawTick, "close") || {};
       const cnt = (n) => n == null ? "" : ` ${n}개`;
       let line = `${rule}`;
-      if (cppiSel === "all" && vsel.call_window) line += ` · 체인 행사가 ${rng(vsel.call_window)}`;
-      else if (vsel.call_window) line += ` · 콜·풋 공통 범위 ${rng(vsel.call_window)}`;
+      if (vsel.call_window && vsel.put_window) line += ` · 외가격만(등가격·내가격 제외) 콜 ${fmt(vsel.call_window[0], 0)} 초과~${fmt(vsel.call_window[1], 0)} · 풋 ${fmt(vsel.put_window[0], 0)}~${fmt(vsel.put_window[1], 0)} 미만`;
       line += ` · 실제 합산 콜 ${rng(cs)}${cnt(vsel.call_count)} · 풋 ${rng(ps)}${cnt(vsel.put_count)}`;
       const narrow = cppiSel !== "all" && vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
       if (narrow) line += " · 규칙 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
