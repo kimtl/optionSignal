@@ -122,8 +122,7 @@ def create_app(
         tf: int = Query(default=1, ge=1, le=60),
     ):
         hub = _hub()
-        raw = load_history(hub.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
-        bars = aggregate_bars(raw, minutes=tf)
+        bars = aggregate_bars(hub.history_points(), minutes=tf)
         return {"symbol": hub.symbol, "tf": tf, "points": [compact_point(item) for item in bars[-limit:]]}
 
     @app.get("/api/history")

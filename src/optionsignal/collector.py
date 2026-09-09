@@ -7,7 +7,7 @@ import socket
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .fetch import DEFAULT_SYMBOL, fetch_chain
+from .fetch import DEFAULT_SYMBOL, FUTURES_SYMBOL, fetch_chain, fetch_price_history
 from .settings import default_interval, public_url, tasty_configured
 from .signal import (
     DEFAULT_BAND,
@@ -20,12 +20,17 @@ from .signal import (
 )
 from .store import (
     BAR_HISTORY_LIMIT,
+    CHART_HOURS,
     RAW_HISTORY_LIMIT,
     aggregate_bars,
+    backfill_option_bars,
     compact_point,
+    futures_history_points,
     load_history,
     load_option_series,
+    option_key,
     price_bars,
+    save_bars,
     save_option_ticks,
     save_snapshot,
 )
@@ -70,6 +75,7 @@ class LiveHub:
         self.tasty_feed = tasty_feed
         self.latest: dict | None = None
         self.latest_chain = None
+        self.backfill: dict | None = None
         self.error: str | None = None
         self.last_tick_at: datetime | None = None
         self.subscribers: set[asyncio.Queue] = set()
@@ -125,20 +131,76 @@ class LiveHub:
             "phase": getattr(feed, "phase", None) if feed else None,
             "contracts": len(getattr(feed, "contracts", []) or []) if feed else 0,
             "quoted": int(getattr(feed, "quoted_count", 0) or 0) if feed else 0,
+            "backfill": self.backfill,
             "share_hint": url or lan_ip(),
             "public_url": url,
             "port": self.port,
         }
 
+    def history_points(self) -> list[dict]:
+        """Backfilled candles (before the server started) plus live ticks, oldest first."""
+        symbol = self.symbol.lstrip("/")
+        return futures_history_points(symbol) + load_history(symbol, limit=RAW_HISTORY_LIMIT)
+
     def live_payload(self) -> dict:
-        raw = load_history(self.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
-        bars = aggregate_bars(raw, minutes=1)
+        bars = aggregate_bars(self.history_points(), minutes=1)
         points = [compact_point(item) for item in bars[-BAR_HISTORY_LIMIT:]]
         return {
             "tick": self.latest,
             "points": points,
             "status": self.status(),
         }
+
+    async def backfill_history(self, hours: int = CHART_HOURS) -> dict:
+        """Fill the chart with the hours before this process started.
+
+        tastytrade: 1m dxFeed candles for the future and every streamed 0DTE contract.
+        Otherwise: Yahoo 1m candles for the future only.
+        """
+        symbol = self.symbol.lstrip("/")
+        summary = {"source": None, "nq_bars": 0, "options": 0}
+        feed = self.tasty_feed
+        if feed is not None:
+            for _ in range(120):  # wait up to ~60s for the chain to load
+                if feed.contracts and feed.underlying_symbol and getattr(feed, "_session", None) is not None:
+                    break
+                if not self._running:
+                    return summary
+                await asyncio.sleep(0.5)
+            else:
+                log.warning("backfill skipped: tastytrade chain not ready")
+                return summary
+            try:
+                candles = await feed.fetch_candles(hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("dxFeed candle backfill failed: %s", exc)
+                candles = {}
+            summary["source"] = "tastytrade"
+            nq = candles.get(feed.underlying_symbol) or []
+            if nq:
+                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, "NQ", nq)
+            for contract in feed.contracts:
+                bars = candles.get(contract.streamer_symbol)
+                if not bars:
+                    continue
+                key = option_key(contract.strike, contract.right)
+                await asyncio.to_thread(backfill_option_bars, symbol, key, bars)
+                summary["options"] += 1
+        else:
+            summary["source"] = "yahoo"
+            try:
+                # The board's candles are always the NQ future, whatever the option symbol.
+                bars = await asyncio.to_thread(fetch_price_history, FUTURES_SYMBOL, hours)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Yahoo history backfill failed: %s", exc)
+                bars = []
+            if bars:
+                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, "NQ", bars)
+        self.backfill = summary
+        log.info("history backfill: %s", summary)
+        if summary["nq_bars"] or summary["options"]:
+            await self.broadcast(self.live_payload() | {"event": "tick"})
+        return summary
 
     def option_series(self, keys: list[str], tf: int = 1, limit: int = BAR_HISTORY_LIMIT) -> dict:
         """OHLC bars of the mid price for each requested contract key (e.g. 24700C)."""
@@ -227,6 +289,7 @@ class LiveHub:
             self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=self.band)
         if self.tasty_feed is not None:
             tasty_task = asyncio.create_task(self.tasty_feed.run(), name="tasty-dxlink")
+        backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
         try:
             while self._running:
                 try:
@@ -249,6 +312,12 @@ class LiveHub:
         finally:
             if self.tasty_feed is not None:
                 self.tasty_feed.stop()
+            if not backfill_task.done():
+                backfill_task.cancel()
+                try:
+                    await backfill_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             if tasty_task:
                 tasty_task.cancel()
                 try:

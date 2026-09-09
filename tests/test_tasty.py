@@ -223,3 +223,74 @@ def test_chain_table_pairs_calls_and_puts_by_strike():
     assert 0.4 < row["call"]["delta"] < 0.7
     assert -0.6 < row["put"]["delta"] < -0.3
     assert table["rows"][1]["put"] is None
+
+
+def test_candle_to_bar_strips_candle_suffix_and_reads_ms_time():
+    from types import SimpleNamespace
+
+    from optionsignal.tasty import _candle_to_bar
+
+    ev = SimpleNamespace(event_symbol="./NQU26C24700:XCME{=1m,tho=true}", time=1788600000000,
+                         open=41.0, high=43.0, low=40.5, close=42.25, volume=17)
+    symbol, ts_ms, bar = _candle_to_bar(ev)
+    assert symbol == "./NQU26C24700:XCME"
+    assert ts_ms == 1788600000000
+    assert bar["asof"].startswith("2026-09-")
+    assert bar["close"] == 42.25 and bar["high"] == 43.0 and bar["volume"] == 17
+    assert _candle_to_bar(SimpleNamespace(event_symbol="/NQU26:XCME{=1m}", time=1788600000000, close=None)) is None
+
+
+def test_hub_backfill_saves_future_and_option_candles(tmp_path, monkeypatch):
+    import asyncio
+
+    from optionsignal.store import load_bars, load_option_series
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+
+    class Feed:
+        contracts = [LiveContract(date(2026, 9, 8), "call", 24700, "./NQU26C24700:XCME", 10),
+                     LiveContract(date(2026, 9, 8), "put", 24700, "./NQU26P24700:XCME", 10)]
+        underlying_symbol = "/NQU26:XCME"
+        _session = object()
+        ready = True
+        streaming = False
+        error = None
+
+        async def fetch_candles(self, hours=12):
+            return {
+                "/NQU26:XCME": [
+                    {"asof": "2026-09-08T09:58:00+00:00", "open": 24600, "high": 24610, "low": 24590, "close": 24605, "volume": 100},
+                    {"asof": "2026-09-08T09:59:00+00:00", "open": 24605, "high": 24620, "low": 24600, "close": 24615, "volume": 90},
+                ],
+                "./NQU26C24700:XCME": [{"asof": "2026-09-08T09:59:00+00:00", "close": 55.5, "volume": 3}],
+            }
+
+    hub = LiveHub(symbol="/NQ", interval=5, tasty_feed=Feed())
+    hub._running = True
+    summary = asyncio.run(hub.backfill_history(hours=12))
+    assert summary == {"source": "tastytrade", "nq_bars": 2, "options": 1}
+    assert [b["close"] for b in load_bars("NQ", "NQ")] == [24605, 24615]
+    assert load_option_series("NQ", "24700C")[0]["price"] == 55.5
+    assert load_option_series("NQ", "24700P") == []
+    assert hub.status()["backfill"]["nq_bars"] == 2
+    points = hub.live_payload()["points"]
+    assert len(points) == 2
+    assert points[0]["nq_close"] == 24605 and points[0]["headline_cppi"] is None
+
+
+def test_hub_backfill_uses_yahoo_without_tasty(tmp_path, monkeypatch):
+    import asyncio
+
+    from optionsignal.store import load_bars
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
+    monkeypatch.setattr(
+        "optionsignal.collector.fetch_price_history",
+        lambda symbol, hours: [{"asof": "2026-09-08T09:58:00+00:00", "open": 480, "high": 481, "low": 479.5, "close": 480.5, "volume": 1000}],
+    )
+    hub = LiveHub(symbol="QQQ", interval=60)
+    hub._running = True
+    summary = asyncio.run(hub.backfill_history(hours=12))
+    assert summary["source"] == "yahoo" and summary["nq_bars"] == 1
+    assert load_bars("QQQ", "NQ")[0]["close"] == 480.5

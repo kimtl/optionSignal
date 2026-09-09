@@ -78,6 +78,18 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_option_ticks_symbol_key_ts ON option_ticks(symbol, key, ts)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bars (
+            symbol TEXT NOT NULL,
+            key TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL,
+            volume INTEGER,
+            PRIMARY KEY (symbol, key, ts)
+        )
+        """
+    )
     return conn
 
 
@@ -296,31 +308,45 @@ def _futures_price(point: dict) -> float | None:
 
 
 def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
-    """Bucket ticks (or smaller bars) into 1m/5m CPPI candles, with NQ OHLC alongside."""
+    """Bucket ticks (or smaller bars) into 1m/5m bars.
+
+    Each bar carries NQ OHLC plus the CPPI OHLC when the point has one. Points with
+    only a futures price (backfilled history) still produce a bar.
+    """
     minutes = max(1, int(minutes))
     buckets: dict[str, dict] = {}
     order: list[str] = []
+    points = sorted(points, key=lambda p: (_parse_ts(p.get("asof") or p.get("stored_at")) or datetime.min.replace(tzinfo=timezone.utc)))
     for point in points:
         ts = _parse_ts(point.get("asof") or point.get("stored_at"))
+        if ts is None:
+            continue
         close = point.get("close")
         if close is None:
             close = point.get("headline_cppi")
-        if ts is None or close is None:
-            continue
-        close = float(close)
-        high = float(point.get("high") if point.get("high") is not None else close)
-        low = float(point.get("low") if point.get("low") is not None else close)
-        open_ = float(point.get("open") if point.get("open") is not None else close)
         nq_close = _futures_price(point)
+        if close is None and nq_close is None:
+            continue
+        has_cppi = close is not None
+        if has_cppi:
+            close = float(close)
+            high = float(point.get("high") if point.get("high") is not None else close)
+            low = float(point.get("low") if point.get("low") is not None else close)
+            open_ = float(point.get("open") if point.get("open") is not None else close)
+        else:
+            high = low = open_ = None
         nq_high = float(point["nq_high"]) if point.get("nq_high") is not None else nq_close
         nq_low = float(point["nq_low"]) if point.get("nq_low") is not None else nq_close
         nq_open = float(point["nq_open"]) if point.get("nq_open") is not None else nq_close
         key_dt = floor_bar_time(ts, minutes)
-        key = key_dt.isoformat()
-        call_prem = float(point.get("headline_call_premium") or 0)
-        put_prem = float(point.get("headline_put_premium") or 0)
-        if key not in buckets:
-            buckets[key] = {
+        # Backfilled candles are stored in UTC while live ticks carry New York offsets;
+        # bucket on the instant so the same minute never yields two bars.
+        key = key_dt.astimezone(timezone.utc).isoformat()
+        call_prem = float(point.get("headline_call_premium") or 0) if has_cppi else None
+        put_prem = float(point.get("headline_put_premium") or 0) if has_cppi else None
+        bar = buckets.get(key)
+        if bar is None:
+            bar = {
                 "asof": key_dt.isoformat(timespec="seconds"),
                 "stored_at": point.get("stored_at"),
                 "open": open_,
@@ -338,16 +364,21 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
                 "_first_call": call_prem,
                 "_first_put": put_prem,
             }
+            buckets[key] = bar
             order.append(key)
             continue
-        bar = buckets[key]
-        bar["high"] = max(bar["high"], high)
-        bar["low"] = min(bar["low"], low)
-        bar["close"] = close
-        bar["headline_cppi"] = close
-        bar["headline_call_premium"] = call_prem
-        bar["headline_put_premium"] = put_prem
-        bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
+        if has_cppi:
+            if bar["close"] is None:
+                bar["open"], bar["high"], bar["low"] = open_, high, low
+                bar["_first_call"], bar["_first_put"] = call_prem, put_prem
+            else:
+                bar["high"] = max(bar["high"], high)
+                bar["low"] = min(bar["low"], low)
+            bar["close"] = close
+            bar["headline_cppi"] = close
+            bar["headline_call_premium"] = call_prem
+            bar["headline_put_premium"] = put_prem
+            bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
         if nq_close is not None:
             if bar["nq_open"] is None:
                 bar["nq_open"] = nq_open
@@ -359,11 +390,106 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
     prev_close = None
     for key in order:
         bar = buckets[key]
-        bar["call_premium_delta_1m"] = bar["headline_call_premium"] - bar["_first_call"]
-        bar["put_premium_delta_1m"] = bar["headline_put_premium"] - bar["_first_put"]
-        bar["cppi_delta_1m"] = None if prev_close is None else bar["close"] - prev_close
-        prev_close = bar["close"]
+        if bar["close"] is not None:
+            bar["call_premium_delta_1m"] = bar["headline_call_premium"] - bar["_first_call"]
+            bar["put_premium_delta_1m"] = bar["headline_put_premium"] - bar["_first_put"]
+            bar["cppi_delta_1m"] = None if prev_close is None else bar["close"] - prev_close
+            prev_close = bar["close"]
+        else:
+            bar["call_premium_delta_1m"] = None
+            bar["put_premium_delta_1m"] = None
+            bar["cppi_delta_1m"] = None
         bar.pop("_first_call", None)
         bar.pop("_first_put", None)
         out.append(bar)
     return out
+
+
+def save_bars(symbol: str, key: str, bars: list[dict], path: Path | None = None) -> int:
+    """Store backfilled 1m candles (from dxFeed/Yahoo) for the future or a contract."""
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    rows = []
+    for bar in bars:
+        ts = _parse_ts(bar.get("asof") or bar.get("ts"))
+        close = bar.get("close")
+        if ts is None or close is None:
+            continue
+        ts_utc = ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+        rows.append((
+            symbol, key, ts_utc,
+            float(bar.get("open") if bar.get("open") is not None else close),
+            float(bar.get("high") if bar.get("high") is not None else close),
+            float(bar.get("low") if bar.get("low") is not None else close),
+            float(close), int(bar.get("volume") or 0),
+        ))
+    if not rows:
+        return 0
+    with _connect(path) as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO bars (symbol, key, ts, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=CHART_HOURS + 1)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM bars WHERE ts < ?", (cutoff,))
+        conn.commit()
+    return len(rows)
+
+
+def load_bars(symbol: str, key: str, limit: int = BAR_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT ts, open, high, low, close, volume FROM bars WHERE symbol = ? AND key = ? ORDER BY ts DESC LIMIT ?",
+            (symbol, key, limit),
+        ).fetchall()
+    return [
+        {"asof": ts, "open": o, "high": h, "low": l, "close": c, "volume": v}
+        for ts, o, h, l, c, v in reversed(rows)
+    ]
+
+
+def futures_history_points(symbol: str, path: Path | None = None) -> list[dict]:
+    """Backfilled NQ candles shaped like tick points so aggregate_bars can merge them."""
+    return [
+        {
+            "asof": bar["asof"],
+            "nq_open": bar["open"],
+            "nq_high": bar["high"],
+            "nq_low": bar["low"],
+            "nq_close": bar["close"],
+            "futures_price": bar["close"],
+            "backfill": True,
+        }
+        for bar in load_bars(symbol, "NQ", path=path)
+    ]
+
+
+def backfill_option_bars(symbol: str, key: str, bars: list[dict], path: Path | None = None) -> int:
+    """Insert historical candles into option_ticks for times before the first live tick.
+
+    Backfilled rows have bid/ask NULL so they can be replaced by a later backfill.
+    """
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    with _connect(path) as conn:
+        first_live = conn.execute(
+            "SELECT MIN(ts) FROM option_ticks WHERE symbol = ? AND key = ? AND bid IS NOT NULL",
+            (symbol, key),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM option_ticks WHERE symbol = ? AND key = ? AND bid IS NULL", (symbol, key))
+        rows = []
+        for bar in bars:
+            ts = _parse_ts(bar.get("asof") or bar.get("ts"))
+            close = bar.get("close")
+            if ts is None or close is None or close <= 0:
+                continue
+            ts_utc = ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+            if first_live and ts_utc >= first_live:
+                continue
+            rows.append((ts_utc, symbol, key, None, float(close), None, None, float(close), int(bar.get("volume") or 0)))
+        if rows:
+            conn.executemany(
+                "INSERT INTO option_ticks (ts, symbol, key, expiry, mid, bid, ask, last, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        conn.commit()
+    return len(rows)

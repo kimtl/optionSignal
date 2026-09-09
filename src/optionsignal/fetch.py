@@ -150,3 +150,38 @@ def fetch_chain(
         multiplier=MULTIPLIERS.get(symbol.upper(), 100),
         source="yahoo",
     )
+
+
+def fetch_price_history(symbol: str = FUTURES_SYMBOL, hours: int = 12) -> list[dict]:
+    """Yahoo 1-minute candles for the last `hours` (delayed; used when there is no tastytrade).
+
+    Futures roots (/NQ, NQ) map to NQ=F. Returns [{asof, open, high, low, close, volume}].
+    """
+    yahoo = symbol.upper()
+    if yahoo.lstrip("/") in {"NQ", "MNQ"}:
+        yahoo = FUTURES_SYMBOL
+    # Yahoo's "1d"/"2d" windows start at midnight New York, so an overnight futures
+    # session is cut off. "5d" returns the full minute history (1m allows up to 7d).
+    frame = yf.Ticker(yahoo).history(period="5d", interval="1m", prepost=True, auto_adjust=False)
+    if frame is None or frame.empty:
+        return []
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)
+    out: list[dict] = []
+    for ts, row in frame.iterrows():
+        stamp = pd.Timestamp(ts)
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        if stamp < cutoff:
+            continue
+        close = _to_float(row.get("Close"))
+        if close is None or close <= 0:
+            continue
+        out.append({
+            "asof": stamp.tz_convert("UTC").isoformat(timespec="seconds"),
+            "open": _to_float(row.get("Open")) or close,
+            "high": _to_float(row.get("High")) or close,
+            "low": _to_float(row.get("Low")) or close,
+            "close": close,
+            "volume": _to_int(row.get("Volume")),
+        })
+    return out

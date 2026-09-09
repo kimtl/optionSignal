@@ -397,9 +397,18 @@
       return `${hours}시간`;
     }
 
+    let backfillInfo = null;
     function chartHint() {
       const opt = (typeof picks !== "undefined" && picks.length) ? ` · 옵션 ${picks.length}개 선(오른쪽 축, 중간가)` : "";
-      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · NQ 선물 캔들(왼쪽 축)${opt} · 휠로 확대/축소`;
+      let hist = "";
+      if (backfillInfo) {
+        if (backfillInfo.nq_bars) {
+          hist = ` · 과거 ${backfillInfo.nq_bars}분 불러옴(${backfillInfo.source === "tastytrade" ? "dxFeed" : "Yahoo"}${backfillInfo.options ? `, 옵션 ${backfillInfo.options}개` : ""})`;
+        } else if (backfillInfo.source) {
+          hist = " · 과거 시세 없음(서버 시작 이후만)";
+        }
+      }
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · NQ 선물 캔들(왼쪽 축)${opt}${hist} · 휠로 확대/축소`;
     }
 
     function parseTs(p) {
@@ -418,15 +427,15 @@
       const buckets = new Map();
       for (const p of list || []) {
         const ts = parseTs(p);
-        const close = p.close ?? p.headline_cppi;
-        if (ts == null || close == null) continue;
-        const key = floorBar(ts, minutes);
-        const high = p.high ?? close;
-        const low = p.low ?? close;
-        const open = p.open ?? close;
-        const callP = p.headline_call_premium || 0;
-        const putP = p.headline_put_premium || 0;
+        const close = p.close ?? p.headline_cppi ?? null;
         const nqClose = p.nq_close ?? p.futures_price ?? null;
+        if (ts == null || (close == null && nqClose == null)) continue;
+        const key = floorBar(ts, minutes);
+        const high = close == null ? null : (p.high ?? close);
+        const low = close == null ? null : (p.low ?? close);
+        const open = close == null ? null : (p.open ?? close);
+        const callP = close == null ? null : (p.headline_call_premium || 0);
+        const putP = close == null ? null : (p.headline_put_premium || 0);
         const nqHigh = p.nq_high ?? nqClose;
         const nqLow = p.nq_low ?? nqClose;
         const nqOpen = p.nq_open ?? nqClose;
@@ -451,12 +460,19 @@
           });
           continue;
         }
-        prev.high = Math.max(prev.high, high);
-        prev.low = Math.min(prev.low, low);
-        prev.close = close;
-        prev.headline_cppi = close;
-        prev.headline_call_premium = callP;
-        prev.headline_put_premium = putP;
+        if (close != null) {
+          if (prev.close == null) {
+            prev.open = open; prev.high = high; prev.low = low;
+            prev._firstCall = callP; prev._firstPut = putP;
+          } else {
+            prev.high = Math.max(prev.high, high);
+            prev.low = Math.min(prev.low, low);
+          }
+          prev.close = close;
+          prev.headline_cppi = close;
+          prev.headline_call_premium = callP;
+          prev.headline_put_premium = putP;
+        }
         if (nqClose != null) {
           if (prev.nq_open == null) prev.nq_open = nqOpen;
           prev.nq_high = prev.nq_high == null ? nqHigh : Math.max(prev.nq_high, nqHigh);
@@ -467,10 +483,16 @@
       const out = [];
       let prevClose = null;
       for (const bar of buckets.values()) {
-        bar.call_premium_delta_1m = bar.headline_call_premium - bar._firstCall;
-        bar.put_premium_delta_1m = bar.headline_put_premium - bar._firstPut;
-        bar.cppi_delta_1m = prevClose == null ? null : bar.close - prevClose;
-        prevClose = bar.close;
+        if (bar.close == null) {
+          bar.call_premium_delta_1m = null;
+          bar.put_premium_delta_1m = null;
+          bar.cppi_delta_1m = null;
+        } else {
+          bar.call_premium_delta_1m = bar.headline_call_premium - bar._firstCall;
+          bar.put_premium_delta_1m = bar.headline_put_premium - bar._firstPut;
+          bar.cppi_delta_1m = prevClose == null ? null : bar.close - prevClose;
+          prevClose = bar.close;
+        }
         delete bar._firstCall;
         delete bar._firstPut;
         out.push(bar);
@@ -576,6 +598,7 @@
     function paintStatus(status) {
       if (!status) return;
       intervalSec = status.interval || 60;
+      if ("backfill" in status) backfillInfo = status.backfill;
       const sess = status.session || {};
       $("session").textContent = sess.label_ko || "세션";
       $("session").className = "pill" + (sess.live ? " live" : " hot");

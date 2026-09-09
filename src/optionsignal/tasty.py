@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .metrics import option_mid, sane_iv
@@ -67,6 +67,39 @@ def _right(option_type: object, streamer_symbol: str = "") -> str:
     if match:
         return "put" if match.group(1) == "P" else "call"
     return "call"
+
+
+def _candle_to_bar(event) -> tuple[str, int, dict] | None:
+    """dxFeed Candle -> (streamer_symbol without {=1m,...}, ts_ms, bar dict)."""
+    raw_symbol = getattr(event, "event_symbol", None) or getattr(event, "eventSymbol", None)
+    if not raw_symbol:
+        return None
+    symbol = str(raw_symbol).split("{", 1)[0]
+    close = _num(getattr(event, "close", None))
+    if close is None or close <= 0:
+        return None
+    when = getattr(event, "time", None)
+    if isinstance(when, datetime):
+        ts_ms = int(when.timestamp() * 1000)
+    else:
+        ts_ms = int(_num(when) or 0)
+        if ts_ms and ts_ms < 10_000_000_000:  # seconds, not ms
+            ts_ms *= 1000
+    if not ts_ms:
+        return None
+    ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    open_ = _num(getattr(event, "open", None))
+    high = _num(getattr(event, "high", None))
+    low = _num(getattr(event, "low", None))
+    volume = _num(getattr(event, "volume", None))
+    return symbol, ts_ms, {
+        "asof": ts.isoformat(timespec="seconds"),
+        "open": open_ if open_ else close,
+        "high": high if high else close,
+        "low": low if low else close,
+        "close": close,
+        "volume": int(volume) if volume and volume > 0 else 0,
+    }
 
 
 @dataclass
@@ -179,6 +212,45 @@ class TastyFeed:
         self.error: str | None = None
         self._running = False
         self._spot: float | None = None
+        self._session = None
+
+    async def fetch_candles(self, hours: int = 12, idle_seconds: float = 2.5, max_seconds: float = 40.0) -> dict[str, list[dict]]:
+        """Pull 1m dxFeed candles for the future and every streamed contract.
+
+        Returns {streamer_symbol: [{asof, open, high, low, close, volume}, ...]}. Uses its
+        own DXLink connection so the live quote stream is not disturbed. Best effort:
+        stops after `idle_seconds` without new events or `max_seconds` overall.
+        """
+        import asyncio
+
+        from tastytrade import DXLinkStreamer
+        from tastytrade.dxfeed import Candle
+
+        session = self._session
+        if session is None or not self.underlying_symbol:
+            return {}
+        symbols = [self.underlying_symbol, *[c.streamer_symbol for c in self.contracts]]
+        start = datetime.now(tz=NY) - timedelta(hours=hours)
+        out: dict[str, dict[int, dict]] = {}
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + max_seconds
+        async with DXLinkStreamer(session) as streamer:
+            await streamer.subscribe_candle(symbols, "1m", start_time=start, extended_trading_hours=True)
+            while loop.time() < deadline:
+                try:
+                    event = await asyncio.wait_for(streamer.get_event(Candle), timeout=idle_seconds)
+                except asyncio.TimeoutError:
+                    break
+                bar = _candle_to_bar(event)
+                if bar is None:
+                    continue
+                symbol, ts_ms, row = bar
+                out.setdefault(symbol, {})[ts_ms] = row
+        result = {}
+        for symbol, rows in out.items():
+            result[symbol] = [rows[k] for k in sorted(rows)]
+        log.info("dxFeed candles: %s symbols, %s bars", len(result), sum(len(v) for v in result.values()))
+        return result
 
     @property
     def quoted_count(self) -> int:
@@ -250,6 +322,7 @@ class TastyFeed:
         self.phase = "login"
         log.info("tastytrade login (test=%s)", is_test)
         async with Session(secret, refresh, is_test=is_test, timeout=20.0) as session:
+            self._session = session
             self.phase = "chain"
             await self._load_instruments(session)
             await self._hydrate_quotes_rest(session)
