@@ -52,6 +52,7 @@ log = logging.getLogger("optionsignal")
 
 FetchFn = Callable[..., Any]
 DEFAULT_INTERVAL = 60
+FEED_BAND = 0.08  # strikes streamed from tastytrade: wider than any CPPI band so every variant has quotes
 
 
 def lan_ip() -> str | None:
@@ -357,7 +358,7 @@ class LiveHub:
         self._backfill_expiry = None
         self.error = None
         if want:
-            self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=self.band)
+            self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=max(self.band, FEED_BAND))
             self._tasty_task = asyncio.create_task(self.tasty_feed.run(), name="tasty-dxlink")
             log.info("feed switched to %s", self.symbol)
         self._backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")

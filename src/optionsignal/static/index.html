@@ -302,6 +302,9 @@
               <button type="button" id="tf1" class="active" data-tf="1">1분봉</button>
               <button type="button" id="tf5" data-tf="5">5분봉</button>
             </div>
+            <div class="tf-group">
+              <button type="button" id="cppiToggle" class="active" title="CPPI 프리미엄 선 표시 (이 화면만)">CPPI 선</button>
+            </div>
             <div class="scale-group">
               <button type="button" data-hours="0.5">30분</button>
               <button type="button" data-hours="1" class="active">1시간</button>
@@ -326,14 +329,15 @@
         <summary>CPPI · 콜-풋 프리미엄 (참고용, 접힘)</summary>
         <div class="controls" style="margin:6px 0 12px">
           <label class="sub">선정
-            <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지">
-              <option value="0">등가격 ±8% 밴드</option>
-              <option value="100">등가격 ±100포</option>
-              <option value="150">등가격 ±150포</option>
-              <option value="200">등가격 ±200포</option>
-              <option value="300">등가격 ±300포</option>
+            <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지 (이 화면에만 적용)">
+              <option value="b3">등가격 ±3% 밴드</option>
+              <option value="p100">등가격 ±100포</option>
+              <option value="p150">등가격 ±150포</option>
+              <option value="p200">등가격 ±200포</option>
+              <option value="p300">등가격 ±300포</option>
             </select>
           </label>
+          <span class="meta">선정과 옵션 선택은 이 브라우저에만 적용됩니다. 지수 선택만 모든 화면 공통.</span>
         </div>
         <section class="hero">
           <article class="card" id="cppiCard">
@@ -440,6 +444,7 @@
     let backfillInfo = null;
     function chartHint() {
       const opt = (typeof picks !== "undefined" && picks.length) ? ` · 옵션 ${picks.length}개 선(오른쪽 축, 중간가)` : "";
+      const cppiTxt = showCppiLine ? ` · CPPI 선(${CPPI_LABELS[cppiSel]}, −1~+1)` : "";
       let hist = "";
       if (backfillInfo) {
         if (backfillInfo.nq_bars) {
@@ -448,7 +453,7 @@
           hist = " · 과거 시세 없음(서버 시작 이후만)";
         }
       }
-      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · ${futCode} 선물 캔들(왼쪽 축)${opt}${hist} · 휠로 확대/축소`;
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · ${futCode} 선물 캔들(왼쪽 축)${opt}${cppiTxt}${hist} · 휠로 확대/축소`;
     }
 
     function parseTs(p) {
@@ -495,12 +500,18 @@
             nq_high: nqHigh,
             nq_low: nqLow,
             nq_close: nqClose,
+            cppi_variants: p.cppi_variants || null,
+            cppi_variants_open: p.cppi_variants_open || p.cppi_variants || null,
             _firstCall: callP,
             _firstPut: putP,
           });
           continue;
         }
         if (close != null) {
+          if (p.cppi_variants) {
+            if (!prev.cppi_variants_open) prev.cppi_variants_open = p.cppi_variants_open || p.cppi_variants;
+            prev.cppi_variants = p.cppi_variants;
+          }
           if (prev.close == null) {
             prev.open = open; prev.high = high; prev.low = low;
             prev._firstCall = callP; prev._firstPut = putP;
@@ -550,8 +561,79 @@
       return visible.length ? visible : bars.slice(-2);
     }
 
-    function paintTick(tick) {
-      if (!tick) return;
+    // ---- per-viewer CPPI selection ------------------------------------
+    const CPPI_SEL_KEY = "optionsignal.cppiSel";
+    const CPPI_LINE_KEY = "optionsignal.cppiLine";
+    const CPPI_LABELS = {b3: "등가격 ±3% 밴드", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
+    let cppiSel = "b3";
+    try { const v = localStorage.getItem(CPPI_SEL_KEY); if (v && CPPI_LABELS[v]) cppiSel = v; } catch {}
+    let showCppiLine = true;
+    try { showCppiLine = localStorage.getItem(CPPI_LINE_KEY) !== "0"; } catch {}
+    const CPPI_COLOR = "#9ecbff";
+
+    // History points carry variants as [cppi, call, put]; the live tick carries full objects.
+    function variantOf(p, which) {
+      const bag = p && p[which === "open" ? "cppi_variants_open" : "cppi_variants"];
+      const v = bag && bag[cppiSel];
+      if (!v) return null;
+      if (Array.isArray(v)) return {cppi: v[0], call_premium: v[1], put_premium: v[2]};
+      return v;
+    }
+    function viewPoint(p) {
+      const v = variantOf(p, "close");
+      if (!v) return p;
+      const o = variantOf(p, "open") || v;
+      return Object.assign({}, p, {
+        headline_cppi: v.cppi, close: v.cppi,
+        headline_call_premium: v.call_premium, headline_put_premium: v.put_premium,
+        call_premium_delta_1m: v.call_premium - o.call_premium,
+        put_premium_delta_1m: v.put_premium - o.put_premium,
+      });
+    }
+    function viewBars(list) {
+      const out = list.map(viewPoint);
+      let prev = null;
+      for (const b of out) {
+        if (b.headline_cppi == null) { b.cppi_delta_1m = null; continue; }
+        b.cppi_delta_1m = prev == null ? null : b.headline_cppi - prev;
+        prev = b.headline_cppi;
+      }
+      return out;
+    }
+    function viewTick(tick) {
+      const v = variantOf(tick, "close");
+      if (!v) return tick;
+      const bars = viewBars(points);
+      const last = bars[bars.length - 1];
+      const prev = bars[bars.length - 2];
+      let d1 = null, d5 = null, dCall = null, dPut = null, flow = null;
+      if (last && prev && prev.headline_cppi != null) d1 = v.cppi - prev.headline_cppi;
+      if (last) {
+        const target = parseTs(last) - 5 * 60 * 1000;
+        const older = bars.filter(b => parseTs(b) <= target && b.headline_cppi != null);
+        if (older.length) d5 = v.cppi - older[older.length - 1].headline_cppi;
+        const o = variantOf(last, "open");
+        if (o) {
+          dCall = v.call_premium - o.call_premium;
+          dPut = v.put_premium - o.put_premium;
+          const tot = Math.abs(dCall) + Math.abs(dPut);
+          flow = tot > 0 ? (dCall - dPut) / tot : null;
+        }
+      }
+      return Object.assign({}, tick, {
+        headline_cppi: v.cppi, headline_call_premium: v.call_premium, headline_put_premium: v.put_premium,
+        headline_call_strikes: v.call_strikes, headline_put_strikes: v.put_strikes,
+        otm_points: v.points, moneyness_band: v.band,
+        bias: v.bias, score: v.score, summary_ko: v.summary_ko,
+        cppi_delta_1m: d1, cppi_delta_5m: d5, call_premium_delta_1m: dCall, put_premium_delta_1m: dPut, flow_1m: flow,
+      });
+    }
+    let lastTick = null;
+
+    function paintTick(rawTick) {
+      if (!rawTick) return;
+      lastTick = rawTick;
+      const tick = viewTick(rawTick);
       const cppi = tick.headline_cppi;
       $("cppi").textContent = cppi == null ? "—" : cppi.toFixed(3);
       $("cppi").className = "big " + tone(cppi);
@@ -564,7 +646,7 @@
       $("putPrem").textContent = fmt(p, 0);
       const cs = tick.headline_call_strikes;
       const ps = tick.headline_put_strikes;
-      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : "등가격 ±8% 밴드";
+      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : `등가격 ±${fmt((tick.moneyness_band || 0.03) * 100, 0)}% 밴드`;
       const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
       $("strikeLine").textContent = `${rule} · 콜 ${rng(cs)} · 풋 ${rng(ps)}`;
       $("delta").textContent = signed(tick.cppi_delta_1m, 3);
@@ -621,7 +703,7 @@
     }
 
     function paintTape(list) {
-      const bars = tfMinutes === 1 ? list : barsForTf(list, 5);
+      const bars = viewBars(tfMinutes === 1 ? list : barsForTf(list, 5));
       $("tapeDeltaHead").textContent = tfMinutes === 1 ? "Δ1m" : "Δ5m";
       const rows = [...bars].reverse().slice(0, 8);
       $("tape").innerHTML = rows.map(p => {
@@ -676,10 +758,6 @@
         if ([...$("symbol").options].some(o => o.value === want)) $("symbol").value = want;
       }
       if (status.max_dte != null) $("maxDte").value = status.max_dte;
-      if ("otm_points" in status) {
-        const want = String(status.otm_points ? Math.round(status.otm_points) : 0);
-        if ([...$("otmPoints").options].some(o => o.value === want)) $("otmPoints").value = want;
-      }
       if (status.error) $("summary").innerHTML = `<span class="error">${status.error}</span>`;
     }
 
@@ -835,6 +913,36 @@
       ctx.fillText(lastLabel, 8, nqY(lastPx) + 4);
 
       drawRatioChart(xAxis);
+      if (showCppiLine) {
+        // CPPI (-1..+1) on its own hidden scale spanning the plot; zero line dashed.
+        const cb = viewBars(bars).filter(b => b.headline_cppi != null);
+        if (cb.length >= 1) {
+          const cY = (v) => padT + (1 - Math.max(-1, Math.min(1, v))) / 2 * plotH;
+          ctx.strokeStyle = "rgba(158,203,255,0.25)";
+          ctx.setLineDash([2, 6]);
+          ctx.beginPath(); ctx.moveTo(padL, cY(0)); ctx.lineTo(cssW - padR, cY(0)); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = CPPI_COLOR;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          cb.forEach((b, i) => {
+            const x = xAt(parseTs(b) + stepMs / 2);
+            const y = cY(b.headline_cppi);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          ctx.lineWidth = 1;
+          const end = cb[cb.length - 1];
+          const ex = xAt(parseTs(end) + stepMs / 2);
+          const ey = cY(end.headline_cppi);
+          ctx.fillStyle = CPPI_COLOR;
+          ctx.beginPath(); ctx.arc(ex, ey, 2.5, 0, Math.PI * 2); ctx.fill();
+          const txt = `CPPI ${end.headline_cppi.toFixed(3)}`;
+          ctx.fillText(txt, Math.min(ex + 6, cssW - padR - ctx.measureText(txt).width - 2), ey - 6);
+          ctx.fillStyle = "rgba(158,203,255,0.7)";
+          ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선`, padL + 6, cY(0) - 4);
+        }
+      }
       const keys = selectedKeys();
       if (!keys.length) return;
       const cutoff = startTs;
@@ -1145,9 +1253,9 @@
 
     function apply(payload) {
       if (!payload) return;
+      if (payload.points) points = payload.points;  // before paintTick: viewer deltas come from the bars
       if (payload.tick) paintTick(payload.tick);
       if (payload.points) {
-        points = payload.points;
         paintTape(points);
         if (activePanel === "boardPanel") drawChart(points);
         $("chartHint").textContent = chartHint();
@@ -1198,10 +1306,9 @@
     async function pushSettings() {
       const symbol = $("symbol").value;
       const maxDte = $("maxDte").value;
-      const otmPoints = $("otmPoints").value;
-      $("deltaNote").textContent = "설정을 모든 화면에 반영하는 중…";
+      $("deltaNote").textContent = "지수 선택을 모든 화면에 반영하는 중…";
       const res = await fetch(
-        `/api/settings?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}&otm_points=${otmPoints}`,
+        `/api/settings?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}`,
         {method: "POST"},
       );
       const data = await res.json();
@@ -1213,7 +1320,21 @@
     }
     $("symbol").onchange = pushSettings;
     $("maxDte").onchange = pushSettings;
-    $("otmPoints").onchange = pushSettings;
+    $("otmPoints").value = cppiSel;
+    $("otmPoints").onchange = () => {
+      cppiSel = CPPI_LABELS[$("otmPoints").value] ? $("otmPoints").value : "b3";
+      try { localStorage.setItem(CPPI_SEL_KEY, cppiSel); } catch {}
+      if (lastTick) paintTick(lastTick);
+      paintTape(points);
+      drawChart(points);
+    };
+    $("cppiToggle").classList.toggle("active", showCppiLine);
+    $("cppiToggle").onclick = () => {
+      showCppiLine = !showCppiLine;
+      try { localStorage.setItem(CPPI_LINE_KEY, showCppiLine ? "1" : "0"); } catch {}
+      $("cppiToggle").classList.toggle("active", showCppiLine);
+      drawChart(points);
+    };
     $("copy").onclick = async () => {
       const url = location.href;
       try { await navigator.clipboard.writeText(url); $("share").textContent = "링크 복사됨"; }

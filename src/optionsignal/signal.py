@@ -26,8 +26,17 @@ from .metrics import (
 from .models import ExpirySlice, OptionChain, OptionQuote, SignalReport
 
 NY = ZoneInfo("America/New_York")
-DEFAULT_BAND = 0.08
+DEFAULT_BAND = 0.03
 DEFAULT_WING_PCT = 0.03
+# Every CPPI selection the board offers is computed on each tick so each viewer can pick
+# their own without changing anything on the server: (key, moneyness band, points from ATM).
+CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
+    ("b3", 0.03, None),
+    ("p100", None, 100.0),
+    ("p150", None, 150.0),
+    ("p200", None, 200.0),
+    ("p300", None, 300.0),
+)
 DEFAULT_HEADLINE_DTE = 0
 
 
@@ -77,6 +86,38 @@ def _slice_for_expiry(
         wing_put_mid=wing_put.mid if wing_put else None,
         wing_pct=wing_pct,
     )
+
+
+def _cppi_variant(
+    quotes: list[OptionQuote],
+    spot: float,
+    band: float | None,
+    points: float | None,
+    rr: float | None,
+) -> dict:
+    """CPPI and premiums for one selection rule, plus the bias text it implies."""
+    calls, puts = select_near_otm(quotes, spot, band if band is not None else DEFAULT_BAND, points=points)
+    call_prem = volume_premium(calls)
+    put_prem = volume_premium(puts)
+    cppi = call_put_premium_imbalance(call_prem, put_prem)
+    call_surge = volume_weighted_pct_change(calls)
+    put_surge = volume_weighted_pct_change(puts)
+    gap = call_surge - put_surge if call_surge is not None and put_surge is not None else None
+    bias, score, summary_ko, _ = bias_from_metrics(cppi, rr, gap)
+    return {
+        "band": band,
+        "points": points,
+        "cppi": cppi,
+        "call_premium": round(call_prem, 2),
+        "put_premium": round(put_prem, 2),
+        "call_volume": total_volume(calls),
+        "put_volume": total_volume(puts),
+        "call_strikes": strike_range(calls),
+        "put_strikes": strike_range(puts),
+        "bias": bias,
+        "score": score,
+        "summary_ko": summary_ko,
+    }
 
 
 def build_report(
@@ -134,6 +175,10 @@ def build_report(
         rr = otm_call_iv - otm_put_iv
 
     bias, score, summary_ko, summary_en = bias_from_metrics(cppi, rr, surge_gap)
+    variants = {
+        key: _cppi_variant(headline_all, chain.spot, band, points, rr)
+        for key, band, points in CPPI_VARIANTS
+    }
     ratio = premium_ratio(call_prem, put_prem)
     if ratio == float("inf"):
         ratio = None
@@ -169,6 +214,7 @@ def build_report(
         otm_points=otm_points,
         headline_call_strikes=strike_range(headline_calls),
         headline_put_strikes=strike_range(headline_puts),
+        cppi_variants=variants,
         headline_expiry=nearest_expiry.isoformat() if nearest_expiry else None,
         headline_dte=_dte(nearest_expiry, now) if nearest_expiry else None,
         session_date=session_date(now).isoformat(),

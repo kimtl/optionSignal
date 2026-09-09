@@ -86,6 +86,7 @@ class SignalReport:
     otm_points: float | None = None
     headline_call_strikes: list[float] | None = None
     headline_put_strikes: list[float] | None = None
+    cppi_variants: dict[str, Any] | None = None  # every selection rule, so viewers pick their own
     headline_expiry: str | None = None  # expiry date actually used for the headline (0DTE) numbers
     headline_dte: int | None = None
     session_date: str | None = None  # NY date whose expiry counts as 0DTE (rolls at 4pm NY)
