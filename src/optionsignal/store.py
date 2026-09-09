@@ -281,7 +281,27 @@ def compact_point(item: dict) -> dict:
         "nq_high": item.get("nq_high"),
         "nq_low": item.get("nq_low"),
         "nq_close": item.get("nq_close"),
+        "cppi_variants": slim_variants(item.get("cppi_variants")),
+        "cppi_variants_open": slim_variants(item.get("cppi_variants_open") or item.get("cppi_variants")),
     }
+
+
+def slim_variants(variants: dict | None) -> dict | None:
+    """History points carry each CPPI selection as [cppi, call_premium, put_premium] to keep SSE small."""
+    if not variants:
+        return None
+    out = {}
+    for key, v in variants.items():
+        if isinstance(v, (list, tuple)):
+            out[key] = list(v)
+            continue
+        cppi = v.get("cppi")
+        out[key] = [
+            None if cppi is None else round(float(cppi), 4),
+            round(float(v.get("call_premium") or 0)),
+            round(float(v.get("put_premium") or 0)),
+        ]
+    return out
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -372,6 +392,8 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
                 "nq_low": nq_low,
                 "nq_close": nq_close,
                 "futures_price": nq_close,
+                "cppi_variants": point.get("cppi_variants"),
+                "cppi_variants_open": point.get("cppi_variants_open") or point.get("cppi_variants"),
                 "_first_call": call_prem,
                 "_first_put": put_prem,
             }
@@ -390,6 +412,10 @@ def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
             bar["headline_call_premium"] = call_prem
             bar["headline_put_premium"] = put_prem
             bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
+            if point.get("cppi_variants"):
+                if not bar.get("cppi_variants_open"):
+                    bar["cppi_variants_open"] = point.get("cppi_variants_open") or point.get("cppi_variants")
+                bar["cppi_variants"] = point["cppi_variants"]
         if nq_close is not None:
             if bar["nq_open"] is None:
                 bar["nq_open"] = nq_open

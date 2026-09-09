@@ -249,3 +249,25 @@ def test_build_report_after_close_uses_next_expiry_as_0dte():
     )
     day_report = build_report(chain_noon, max_dte=0)
     assert day_report.headline_expiry == "2026-09-08" and day_report.headline_cppi > 0.5
+
+
+def test_build_report_computes_every_cppi_variant():
+    quotes = []
+    for strike in range(24000, 25425, 25):
+        quotes.append(quote("call", strike, 10.0, volume=50 if strike <= 24800 else 5))
+        quotes.append(quote("put", strike, 10.0, volume=5))
+    chain = OptionChain(
+        symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+        asof=NOW, quotes=quotes, multiplier=20, source="test",
+    )
+    report = build_report(chain)
+    assert report.moneyness_band == 0.03
+    v = report.cppi_variants
+    assert set(v) == {"b3", "p100", "p150", "p200", "p300"}
+    assert v["p100"]["call_strikes"] == [24700, 24800]
+    assert v["p300"]["call_strikes"] == [24700, 25000]
+    assert v["b3"]["band"] == 0.03 and v["b3"]["points"] is None
+    assert v["p100"]["cppi"] > v["p300"]["cppi"]  # far calls have little volume, diluting p300
+    assert v["b3"]["bias"] in {"call", "mild_call", "neutral", "mild_put", "put"}
+    # headline (band default) equals the b3 variant
+    assert report.headline_cppi == v["b3"]["cppi"]
