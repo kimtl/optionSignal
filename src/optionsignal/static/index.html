@@ -648,7 +648,14 @@
       const ps = tick.headline_put_strikes;
       const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : `등가격 ±${fmt((tick.moneyness_band || 0.03) * 100, 0)}% 밴드`;
       const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
-      $("strikeLine").textContent = `${rule} · 콜 ${rng(cs)} · 풋 ${rng(ps)}`;
+      const vsel = variantOf(rawTick, "close") || {};
+      const cnt = (n) => n == null ? "" : ` ${n}개`;
+      let line = `${rule}`;
+      if (vsel.call_window && vsel.put_window) line += ` · 규칙 범위 콜 ${rng(vsel.call_window)} · 풋 ${rng(vsel.put_window)}`;
+      line += ` · 실제 합산 콜 ${rng(cs)}${cnt(vsel.call_count)} · 풋 ${rng(ps)}${cnt(vsel.put_count)}`;
+      const narrow = vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
+      if (narrow) line += " · 규칙 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
+      $("strikeLine").textContent = line;
       $("delta").textContent = signed(tick.cppi_delta_1m, 3);
       $("delta").className = "big " + tone(tick.cppi_delta_1m, 0.01);
       const flow = tick.flow_1m;

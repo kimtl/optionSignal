@@ -32,7 +32,9 @@ def yahoo_futures_symbol(symbol: str) -> str:
     cleaned = symbol.strip().upper().lstrip("^").lstrip("/").split(":")[0]
     info = FUTURES_INFO.get(cleaned)
     return info["yahoo"] if info else "NQ=F"
-MAX_STREAM_CONTRACTS = 48
+# Streamed contracts must cover the widest CPPI rule (±3% band ≈ ±890 NQ points, ±300 points)
+# or the board silently computes CPPI on a truncated chain. 500 contracts = 250 strikes.
+MAX_STREAM_CONTRACTS = 500
 
 
 class FeedNotReady(RuntimeError):

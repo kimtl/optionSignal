@@ -271,3 +271,23 @@ def test_build_report_computes_every_cppi_variant():
     assert v["b3"]["bias"] in {"call", "mild_call", "neutral", "mild_put", "put"}
     # headline (band default) equals the b3 variant
     assert report.headline_cppi == v["b3"]["cppi"]
+
+
+def test_cppi_variant_reports_rule_window_and_counts():
+    quotes = []
+    for strike in range(24000, 25425, 25):
+        quotes.append(quote("call", strike, 10.0, volume=5))
+        quotes.append(quote("put", strike, 10.0, volume=5))
+    chain = OptionChain(
+        symbol="NQ", spot=24700.0, futures_symbol="/NQ", futures_price=24700.0,
+        asof=NOW, quotes=quotes, multiplier=20, source="test",
+    )
+    v = build_report(chain).cppi_variants
+    b3 = v["b3"]
+    assert b3["call_window"] == [24700 * 0.995, 24700 * 1.03]
+    assert b3["put_window"] == [24700 * 0.97, 24700 * 1.005]
+    assert b3["call_strikes"] == [24600, 25400] and b3["put_strikes"] == [24000, 24800]
+    assert b3["call_count"] == 33 and b3["put_count"] == 33
+    p100 = v["p100"]
+    assert p100["call_window"] == [24700, 24800] and p100["put_window"] == [24600, 24700]
+    assert p100["call_count"] == 5 and p100["put_count"] == 5

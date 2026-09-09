@@ -97,6 +97,14 @@ def _cppi_variant(
 ) -> dict:
     """CPPI and premiums for one selection rule, plus the bias text it implies."""
     calls, puts = select_near_otm(quotes, spot, band if band is not None else DEFAULT_BAND, points=points)
+    if points is not None:
+        atm = atm_strike(quotes, spot)
+        call_window = [atm, spot + points] if atm is not None else None
+        put_window = [spot - points, atm] if atm is not None else None
+    else:
+        b = band if band is not None else DEFAULT_BAND
+        call_window = [spot * 0.995, spot * (1 + b)]
+        put_window = [spot * (1 - b), spot * 1.005]
     call_prem = volume_premium(calls)
     put_prem = volume_premium(puts)
     cppi = call_put_premium_imbalance(call_prem, put_prem)
@@ -114,6 +122,10 @@ def _cppi_variant(
         "put_volume": total_volume(puts),
         "call_strikes": strike_range(calls),
         "put_strikes": strike_range(puts),
+        "call_window": call_window,
+        "put_window": put_window,
+        "call_count": len(calls),
+        "put_count": len(puts),
         "bias": bias,
         "score": score,
         "summary_ko": summary_ko,
