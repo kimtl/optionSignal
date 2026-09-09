@@ -70,7 +70,7 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 | `OPTIONSIGNAL_INTERVAL=5` | tastytrade일 때 보드 찍는 간격(초) |
 | `OPTIONSIGNAL_MAX_DTE=0` | 0DTE만 |
 | `OPTIONSIGNAL_SYMBOL=/NQ` | 나스닥 선물옵션 |
-| `OPTIONSIGNAL_OTM_POINTS=150` | CPPI에 넣을 옵션: 등가격에서 ±N포인트. 비우면 ±8% 밴드. 화면 「선정」에서도 바꿀 수 있음 |
+| `OPTIONSIGNAL_OTM_POINTS=150` | 서버 기본 CPPI(headline) 선정: 등가격에서 ±N포인트. 비우면 ±3% 밴드. 화면의 「선정」은 이 값과 무관하게 브라우저별로 고릅니다 |
 | `TASTYTRADE_CLIENT_SECRET` | tastytrade OAuth |
 | `TASTYTRADE_REFRESH_TOKEN` | tastytrade refresh token |
 
