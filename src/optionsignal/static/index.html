@@ -444,7 +444,7 @@
     let backfillInfo = null;
     function chartHint() {
       const opt = (typeof picks !== "undefined" && picks.length) ? ` · 옵션 ${picks.length}개 선(오른쪽 축, 중간가)` : "";
-      const cppiTxt = showCppiLine ? ` · CPPI 선(${CPPI_LABELS[cppiSel]}, −1~+1)` : "";
+      const cppiTxt = showCppiLine ? ` · CPPI 선(${CPPI_LABELS[cppiSel]}, 표시 구간 고저에 맞춘 눈금)` : "";
       let hist = "";
       if (backfillInfo) {
         if (backfillInfo.nq_bars) {
@@ -921,14 +921,26 @@
 
       drawRatioChart(xAxis);
       if (showCppiLine) {
-        // CPPI (-1..+1) on its own hidden scale spanning the plot; zero line dashed.
+        // CPPI on its own hidden scale fitted to the high/low of the bars in view
+        // (10% headroom, at least ±0.05 wide) so the line uses the full plot height.
         const cb = viewBars(bars).filter(b => b.headline_cppi != null);
         if (cb.length >= 1) {
-          const cY = (v) => padT + (1 - Math.max(-1, Math.min(1, v))) / 2 * plotH;
-          ctx.strokeStyle = "rgba(158,203,255,0.25)";
-          ctx.setLineDash([2, 6]);
-          ctx.beginPath(); ctx.moveTo(padL, cY(0)); ctx.lineTo(cssW - padR, cY(0)); ctx.stroke();
-          ctx.setLineDash([]);
+          let cLo = Math.min(...cb.map(b => b.headline_cppi));
+          let cHi = Math.max(...cb.map(b => b.headline_cppi));
+          const cMid = (cLo + cHi) / 2;
+          const cHalf = Math.max((cHi - cLo) / 2 * 1.1, 0.05);
+          cLo = Math.max(-1, cMid - cHalf); cHi = Math.min(1, cMid + cHalf);
+          const cY = (v) => padT + (1 - (Math.max(cLo, Math.min(cHi, v)) - cLo) / (cHi - cLo)) * plotH;
+          ctx.fillStyle = "rgba(158,203,255,0.55)";
+          ctx.fillText(`CPPI 고 ${cHi.toFixed(2)}`, padL + 6, padT + 10);
+          ctx.fillText(`CPPI 저 ${cLo.toFixed(2)}`, padL + 6, padT + plotH - 4);
+          const zeroVisible = cLo <= 0 && 0 <= cHi;
+          if (zeroVisible) {
+            ctx.strokeStyle = "rgba(158,203,255,0.25)";
+            ctx.setLineDash([2, 6]);
+            ctx.beginPath(); ctx.moveTo(padL, cY(0)); ctx.lineTo(cssW - padR, cY(0)); ctx.stroke();
+            ctx.setLineDash([]);
+          }
           ctx.strokeStyle = CPPI_COLOR;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
@@ -947,7 +959,8 @@
           const txt = `CPPI ${end.headline_cppi.toFixed(3)}`;
           ctx.fillText(txt, Math.min(ex + 6, cssW - padR - ctx.measureText(txt).width - 2), ey - 6);
           ctx.fillStyle = "rgba(158,203,255,0.7)";
-          ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선`, padL + 6, cY(0) - 4);
+          if (zeroVisible) ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선`, padL + 6, cY(0) - 4);
+          else ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선은 구간 밖(${cLo > 0 ? "전부 콜 우세" : "전부 풋 우세"})`, padL + 6, padT + 22);
         }
       }
       const keys = selectedKeys();
