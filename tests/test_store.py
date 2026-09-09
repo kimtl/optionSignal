@@ -147,7 +147,7 @@ def test_aggregate_bars_merges_backfilled_nq_with_live_ticks():
 
 def test_save_and_load_bars_and_option_backfill(tmp_path, monkeypatch):
     from optionsignal.store import (
-        backfill_option_bars, futures_history_points, load_bars, load_option_series, save_bars, save_option_ticks,
+        FUTURES_KEY, backfill_option_bars, futures_history_points, load_bars, load_option_series, save_bars, save_option_ticks,
     )
     from tests.test_metrics import quote
     from datetime import datetime, timezone
@@ -158,9 +158,9 @@ def test_save_and_load_bars_and_option_backfill(tmp_path, monkeypatch):
         return (now.replace(microsecond=0) - __import__("datetime").timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
     candles = [{"asof": t(3), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
                {"asof": t(2), "open": 1.5, "high": 1.8, "low": 1.2, "close": 1.6, "volume": 5}]
-    assert save_bars("/NQ", "NQ", candles) == 2
-    assert save_bars("/NQ", "NQ", candles) == 2  # idempotent
-    loaded = load_bars("NQ", "NQ")
+    assert save_bars("/NQ", FUTURES_KEY, candles) == 2
+    assert save_bars("/NQ", FUTURES_KEY, candles) == 2  # idempotent
+    loaded = load_bars("NQ", FUTURES_KEY)
     assert [b["close"] for b in loaded] == [1.5, 1.6]
     pts = futures_history_points("NQ")
     assert pts[0]["nq_close"] == 1.5 and pts[0]["backfill"] is True
@@ -186,3 +186,40 @@ def test_aggregate_bars_buckets_by_instant_across_timezones():
     ])
     assert len(bars) == 1
     assert bars[0]["nq_open"] == 1 and bars[0]["nq_high"] == 4 and bars[0]["nq_close"] == 4
+
+
+def test_premium_ratio_points_sums_mid_times_volume_per_tick():
+    from optionsignal.store import premium_ratio_points
+
+    rows = {
+        "24700C": [{"asof": "t1", "mid": 10.0, "volume": 100}, {"asof": "t2", "mid": 12.0, "volume": 150}],
+        "24750C": [{"asof": "t1", "mid": 5.0, "volume": 40}, {"asof": "t2", "mid": 6.0, "volume": 50}],
+        "24700P": [{"asof": "t1", "mid": 8.0, "volume": 100}, {"asof": "t2", "mid": 7.0, "volume": 120}],
+        "24650P": [{"asof": "t1", "mid": 4.0, "volume": 0}],  # no volume -> contributes nothing
+    }
+    pts = premium_ratio_points(rows, ["24700C", "24750C"], ["24700P", "24650P"])
+    assert [p["asof"] for p in pts] == ["t1", "t2"]
+    assert pts[0]["call_premium"] == 10 * 100 + 5 * 40
+    assert pts[0]["put_premium"] == 8 * 100
+    assert pts[0]["ratio"] == (1200 / 800) * 100
+    assert pts[1]["ratio"] == ((12 * 150 + 6 * 50) / (7 * 120)) * 100
+    # needs both sides
+    assert premium_ratio_points(rows, ["24700C"], []) == []
+    assert premium_ratio_points(rows, ["24700C"], ["99999P"]) == []
+
+
+def test_load_option_rows_skips_backfill_and_filters_expiry(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from optionsignal.store import backfill_option_bars, load_option_rows, save_option_ticks
+    from tests.test_metrics import quote
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    save_option_ticks("/NQ", [quote("call", 24700, 9.0, volume=30), quote("put", 24700, 7.0, volume=20)], now=now)
+    backfill_option_bars("NQ", "24700C", [{"asof": (now - timedelta(minutes=5)).isoformat(), "close": 8.0, "volume": 3}], "2026-09-08")
+    rows = load_option_rows("NQ", ["24700C", "24700P"], expiry="2026-09-08")
+    assert [r["mid"] for r in rows["24700C"]] == [9.0]  # backfilled candle row (bid NULL) skipped
+    assert rows["24700P"][0]["volume"] == 20
+    assert load_option_rows("NQ", ["24700C"], expiry="2026-09-09") == {"24700C": []}
+    assert load_option_rows("NQ", []) == {}

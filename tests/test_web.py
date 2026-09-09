@@ -209,3 +209,49 @@ def test_option_series_endpoint(monkeypatch, tmp_path):
         assert call["bars"][-1]["open"] == 1.2
         assert series["100P"]["latest"]["price"] == 1.0
         assert series["NOPE"]["bars"] == [] and series["NOPE"]["latest"] is None
+
+
+def test_premium_ratio_endpoint(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from optionsignal.store import save_option_ticks
+    from tests.test_metrics import quote
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    app = create_app(symbol="/NQ", start_collector=False)
+    hub = app.state.hub
+    base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=3)
+    for i, (c, p) in enumerate([(10.0, 5.0), (12.0, 5.0), (9.0, 6.0)]):
+        save_option_ticks("/NQ", [quote("call", 24700, c, volume=100), quote("put", 24700, p, volume=100)],
+                          now=base + timedelta(minutes=i))
+    hub.front_expiry = quote("call", 24700, 1.0).expiry
+    with TestClient(app) as client:
+        res = client.get("/api/premium_ratio?calls=24700C&puts=24700P&tf=1")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["calls"] == ["24700C"] and data["puts"] == ["24700P"]
+        assert [round(b["close"]) for b in data["bars"]] == [200, 240, 150]
+        assert round(data["latest"]["ratio"]) == 150
+        empty = client.get("/api/premium_ratio?calls=24700C&puts=").json()
+        assert empty["bars"] == [] and empty["latest"] is None
+
+
+def test_settings_symbol_switch_without_tasty_keeps_yahoo_flow(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
+    app = create_app(symbol="QQQ", start_collector=False)
+    hub = app.state.hub
+    calls = []
+
+    def fake_fetch(symbol, max_dte=0, expiry_limit=1, **kw):
+        calls.append(symbol)
+        raise RuntimeError("no yahoo in tests")
+
+    hub.fetch_fn = fake_fetch
+    with TestClient(app) as client:
+        res = client.post("/api/settings?symbol=/ES")
+        # /ES without tastytrade keys is a configuration error, not a crash.
+        assert res.status_code == 400
+        status = client.get("/api/status").json()
+        assert status["symbol"] == "/ES"
+        assert status["futures"] == {"code": "ES", "name_ko": "S&P 500 선물", "yahoo": "ES=F", "multiplier": 50}

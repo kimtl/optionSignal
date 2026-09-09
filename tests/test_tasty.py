@@ -243,7 +243,7 @@ def test_candle_to_bar_strips_candle_suffix_and_reads_ms_time():
 def test_hub_backfill_saves_future_and_option_candles(tmp_path, monkeypatch):
     import asyncio
 
-    from optionsignal.store import load_bars, load_option_series
+    from optionsignal.store import FUTURES_KEY, load_bars, load_option_series
 
     monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
 
@@ -275,7 +275,7 @@ def test_hub_backfill_saves_future_and_option_candles(tmp_path, monkeypatch):
     hub._running = True
     summary = asyncio.run(hub.backfill_history(hours=12))
     assert summary == {"source": "tastytrade", "nq_bars": 2, "options": 1, "expiry": "2026-09-08"}
-    assert [b["close"] for b in load_bars("NQ", "NQ")] == [24605, 24615]
+    assert [b["close"] for b in load_bars("NQ", FUTURES_KEY)] == [24605, 24615]
     assert load_option_series("NQ", "24700C")[0]["price"] == 55.5
     assert load_option_series("NQ", "24700C", expiry="2026-09-08")[0]["price"] == 55.5
     assert load_option_series("NQ", "24700C", expiry="2026-09-09") == []
@@ -289,7 +289,7 @@ def test_hub_backfill_saves_future_and_option_candles(tmp_path, monkeypatch):
 def test_hub_backfill_uses_yahoo_without_tasty(tmp_path, monkeypatch):
     import asyncio
 
-    from optionsignal.store import load_bars
+    from optionsignal.store import FUTURES_KEY, load_bars
 
     monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
     monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
@@ -304,7 +304,7 @@ def test_hub_backfill_uses_yahoo_without_tasty(tmp_path, monkeypatch):
     hub._running = True
     summary = asyncio.run(hub.backfill_history(hours=12))
     assert summary["source"] == "yahoo" and summary["nq_bars"] == 1
-    assert load_bars("QQQ", "NQ")[0]["close"] == 480.5
+    assert load_bars("QQQ", FUTURES_KEY)[0]["close"] == 480.5
 
 
 def test_load_instruments_rolls_to_next_expiry_after_close(monkeypatch):
@@ -359,3 +359,48 @@ def test_load_instruments_rolls_to_next_expiry_after_close(monkeypatch):
     assert feed.session == tomorrow and feed.expiry == tomorrow
     assert {c.expiry for c in feed.contracts} == {tomorrow}
     assert "./NQU26C24700:XCME@08" not in feed.quotes  # stale expired-contract quotes dropped
+
+
+def test_ensure_feed_swaps_tasty_feed_when_symbol_changes(monkeypatch, tmp_path):
+    import asyncio
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: True)
+    created = []
+
+    class FakeFeed:
+        def __init__(self, symbol, max_dte=0, band=0.08):
+            self.symbol = symbol
+            self.contracts = []
+            self.underlying_symbol = None
+            self.stopped = False
+            created.append(self)
+
+        async def run(self):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                raise
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr("optionsignal.collector.TastyFeed", FakeFeed)
+
+    async def scenario():
+        hub = LiveHub(symbol="/NQ", interval=5)
+        hub._running = True
+        assert await hub.ensure_feed() is True
+        assert created[-1].symbol == "/NQ"
+        assert await hub.ensure_feed() is False  # same product: nothing to do
+        hub.symbol = "/ES"
+        hub.latest = {"x": 1}
+        assert await hub.ensure_feed() is True
+        assert created[-1].symbol == "/ES" and created[0].stopped
+        assert hub.latest is None and hub.tasty_feed is created[-1]
+        assert hub.futures_info()["code"] == "ES"
+        await hub._stop_task(hub._tasty_task)
+        await hub._stop_task(hub._backfill_task)
+
+    asyncio.run(scenario())
+    assert len(created) == 2

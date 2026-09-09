@@ -14,6 +14,24 @@ from .settings import env_str
 log = logging.getLogger("optionsignal")
 NY = ZoneInfo("America/New_York")
 DEFAULT_FUTURES_ROOT = "/NQ"
+# Product roots the board knows how to label; anything starting with "/" is still accepted.
+FUTURES_ROOTS = {"NQ", "MNQ", "ES", "MES", "YM", "MYM", "RTY", "M2K"}
+FUTURES_INFO = {
+    "NQ": {"name_ko": "나스닥 선물", "yahoo": "NQ=F", "multiplier": 20},
+    "MNQ": {"name_ko": "마이크로 나스닥", "yahoo": "MNQ=F", "multiplier": 2},
+    "ES": {"name_ko": "S&P 500 선물", "yahoo": "ES=F", "multiplier": 50},
+    "MES": {"name_ko": "마이크로 S&P", "yahoo": "MES=F", "multiplier": 5},
+    "YM": {"name_ko": "다우 선물", "yahoo": "YM=F", "multiplier": 5},
+    "MYM": {"name_ko": "마이크로 다우", "yahoo": "MYM=F", "multiplier": 0.5},
+    "RTY": {"name_ko": "러셀 2000 선물", "yahoo": "RTY=F", "multiplier": 50},
+}
+
+
+def yahoo_futures_symbol(symbol: str) -> str:
+    """Yahoo ticker for the future behind a board symbol (/ES -> ES=F). Non-futures fall back to NQ=F."""
+    cleaned = symbol.strip().upper().lstrip("^").lstrip("/").split(":")[0]
+    info = FUTURES_INFO.get(cleaned)
+    return info["yahoo"] if info else "NQ=F"
 MAX_STREAM_CONTRACTS = 48
 
 
@@ -31,7 +49,7 @@ class FeedConfigError(RuntimeError):
 
 def is_futures_root(symbol: str) -> bool:
     cleaned = symbol.strip().upper().lstrip("^")
-    return cleaned.startswith("/") or cleaned in {"NQ", "MNQ", "ES", "MES"}
+    return cleaned.startswith("/") or cleaned in FUTURES_ROOTS
 
 
 def product_code(symbol: str) -> str:
