@@ -127,17 +127,25 @@ def save_option_ticks(symbol: str, quotes, path: Path | None = None, now: dateti
     return len(rows)
 
 
-def load_option_series(symbol: str, key: str, limit: int = RAW_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
+def load_option_series(
+    symbol: str,
+    key: str,
+    limit: int = RAW_HISTORY_LIMIT,
+    path: Path | None = None,
+    expiry: str | None = None,
+) -> list[dict]:
+    """Price rows for one contract key; pass `expiry` so a rolled-over chain does not mix contracts."""
     symbol = symbol.upper().lstrip("^").lstrip("/")
+    where = "symbol = ? AND key = ?"
+    params: list = [symbol, key]
+    if expiry:
+        where += " AND (expiry = ? OR expiry IS NULL)"
+        params.append(expiry)
+    params.append(limit)
     with _connect(path) as conn:
         rows = conn.execute(
-            """
-            SELECT ts, mid, bid, ask, last, volume FROM option_ticks
-            WHERE symbol = ? AND key = ?
-            ORDER BY ts DESC
-            LIMIT ?
-            """,
-            (symbol, key, limit),
+            f"SELECT ts, mid, bid, ask, last, volume FROM option_ticks WHERE {where} ORDER BY ts DESC LIMIT ?",
+            params,
         ).fetchall()
     out = []
     for ts, mid, bid, ask, last, volume in reversed(rows):
@@ -464,18 +472,21 @@ def futures_history_points(symbol: str, path: Path | None = None) -> list[dict]:
     ]
 
 
-def backfill_option_bars(symbol: str, key: str, bars: list[dict], path: Path | None = None) -> int:
+def backfill_option_bars(
+    symbol: str, key: str, bars: list[dict], expiry: str | None = None, path: Path | None = None
+) -> int:
     """Insert historical candles into option_ticks for times before the first live tick.
 
     Backfilled rows have bid/ask NULL so they can be replaced by a later backfill.
     """
     symbol = symbol.upper().lstrip("^").lstrip("/")
+    scope = "symbol = ? AND key = ?" + (" AND expiry = ?" if expiry else "")
+    scope_params: tuple = (symbol, key, expiry) if expiry else (symbol, key)
     with _connect(path) as conn:
         first_live = conn.execute(
-            "SELECT MIN(ts) FROM option_ticks WHERE symbol = ? AND key = ? AND bid IS NOT NULL",
-            (symbol, key),
+            f"SELECT MIN(ts) FROM option_ticks WHERE {scope} AND bid IS NOT NULL", scope_params
         ).fetchone()[0]
-        conn.execute("DELETE FROM option_ticks WHERE symbol = ? AND key = ? AND bid IS NULL", (symbol, key))
+        conn.execute(f"DELETE FROM option_ticks WHERE {scope} AND bid IS NULL", scope_params)
         rows = []
         for bar in bars:
             ts = _parse_ts(bar.get("asof") or bar.get("ts"))
@@ -485,7 +496,7 @@ def backfill_option_bars(symbol: str, key: str, bars: list[dict], path: Path | N
             ts_utc = ts.astimezone(timezone.utc).isoformat(timespec="seconds")
             if first_live and ts_utc >= first_live:
                 continue
-            rows.append((ts_utc, symbol, key, None, float(close), None, None, float(close), int(bar.get("volume") or 0)))
+            rows.append((ts_utc, symbol, key, expiry, float(close), None, None, float(close), int(bar.get("volume") or 0)))
         if rows:
             conn.executemany(
                 "INSERT INTO option_ticks (ts, symbol, key, expiry, mid, bid, ask, last, volume) VALUES (?,?,?,?,?,?,?,?,?)",

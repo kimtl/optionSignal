@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .metrics import option_mid, sane_iv
+from .metrics import option_mid, sane_iv, session_date
 from .models import OptionChain, OptionQuote
 from .settings import env_str
 
@@ -213,6 +213,8 @@ class TastyFeed:
         self._running = False
         self._spot: float | None = None
         self._session = None
+        self.session: date | None = None  # NY date whose expiry we currently treat as 0DTE
+        self.expiry: date | None = None
 
     async def fetch_candles(self, hours: int = 12, idle_seconds: float = 2.5, max_seconds: float = 40.0) -> dict[str, list[dict]]:
         """Pull 1m dxFeed candles for the future and every streamed contract.
@@ -310,6 +312,17 @@ class TastyFeed:
     def stop(self) -> None:
         self._running = False
 
+    def rolled_over(self) -> bool:
+        """True once 4pm New York passed since the chain was loaded: reload for the next expiry."""
+        if self.session is None:
+            return False
+        if session_date() == self.session:
+            return False
+        log.info("option session rolled %s -> %s; reloading chain", self.session, session_date())
+        self.phase = "rollover"
+        self.streaming = False
+        return True
+
     async def _run_once(self) -> None:
         import asyncio
 
@@ -344,7 +357,7 @@ class TastyFeed:
                 self.streaming = False
                 self.error = f"DXLink: {exc}"
                 log.exception("DXLink failed; falling back to REST quotes")
-                while self._running:
+                while self._running and not self.rolled_over():
                     await self._hydrate_quotes_rest(session)
                     self.phase = "quotes"
                     await asyncio.sleep(5)
@@ -366,6 +379,8 @@ class TastyFeed:
             self.streaming = True
             self.error = None
             while self._running:
+                if self.rolled_over():
+                    return
                 drained = False
                 while True:
                     event = streamer.get_event_nowait(Quote)
@@ -434,7 +449,9 @@ class TastyFeed:
     async def _load_instruments(self, session) -> None:
         from tastytrade.instruments import Future, get_future_option_chain, get_option_chain
 
-        today = datetime.now(tz=NY).date()
+        # After 4pm New York today's contracts are gone; the next session's expiry is the 0DTE one.
+        today = session_date()
+        self.session = today
         contracts: list[LiveContract] = []
         spot = None
         underlying = None
@@ -461,9 +478,11 @@ class TastyFeed:
                 if expiry_date is None:
                     continue
                 dte_cal = (expiry_date - today).days
+                if dte_cal < 0:
+                    continue  # expired (or expiring at 4pm today when we are already past it)
                 dte_api = getattr(option, "days_to_expiration", None)
                 dte = dte_cal if dte_api is None else min(dte_cal, int(dte_api))
-                if dte < 0 or dte > self.max_dte:
+                if dte > self.max_dte:
                     continue
                 strike = _num(getattr(option, "strike_price", None))
                 streamer = getattr(option, "streamer_symbol", None)
@@ -500,8 +519,11 @@ class TastyFeed:
             strikes = sorted({c.strike for c in contracts})
             spot = strikes[len(strikes) // 2]
         self.contracts = nearest_contracts(contracts, spot)
+        keep = {c.streamer_symbol for c in self.contracts} | ({str(underlying)} if underlying else set())
+        self.quotes = {k: v for k, v in self.quotes.items() if k in keep}
         self.underlying_symbol = str(underlying) if underlying else None
         self._spot = spot
+        self.expiry = min(c.expiry for c in self.contracts)
 
     async def _hydrate_quotes_rest(self, session) -> None:
         from tastytrade.market_data import get_market_data_by_type

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 
-from .metrics import option_mid, sane_iv
+from .metrics import option_mid, sane_iv, session_date
 from .models import OptionChain, OptionQuote
 
 NY = ZoneInfo("America/New_York")
@@ -107,7 +107,8 @@ def fetch_chain(
         )
 
     now = now or datetime.now(tz=NY)
-    today = now.astimezone(NY).date()
+    # From 4pm New York today's expiry is dead; the next session's expiry is the 0DTE one.
+    today = session_date(now)
     ticker = yf.Ticker(symbol)
     spot = _last_price(ticker)
 
@@ -136,7 +137,7 @@ def fetch_chain(
     if not quotes:
         expiries = ", ".join(list(ticker.options)[:6]) or "없음"
         raise RuntimeError(
-            f"{symbol} 0DTE 옵션을 못 읽었습니다 (오늘 {today.isoformat()}, DTE≤{max_dte}). "
+            f"{symbol} 0DTE 옵션을 못 읽었습니다 (세션 {today.isoformat()}, DTE≤{max_dte}). "
             f"Yahoo 만기: {expiries}. 주말이거나 Yahoo가 이 서버 IP를 막았을 수 있습니다."
         )
 

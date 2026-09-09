@@ -268,7 +268,7 @@
         <p class="meta" id="meta"></p>
       </article>
       <article class="card" id="pickCard">
-        <div class="label">옵션 선택 · 차트에 추가</div>
+        <div class="label">옵션 선택 · 차트에 추가 <span id="pickExpiry" class="meta"></span></div>
         <div class="pick-row">
           <select id="pickStrike"><option value="">행사가…</option></select>
           <select id="pickRight">
@@ -395,6 +395,17 @@
       if (hours < 1) return `${Math.round(hours * 60)}분`;
       if (hours === Math.floor(hours)) return `${hours}시간`;
       return `${hours}시간`;
+    }
+
+    function nyToday() {
+      return new Date().toLocaleDateString("en-CA", {timeZone: "America/New_York"});
+    }
+    function expiryLabel(expiry, dte, sessionDate) {
+      if (!expiry) return "";
+      const dteText = dte == null ? "" : (dte === 0 ? "0DTE" : `${dte}DTE`);
+      let text = `· 만기 ${expiry.slice(5)}${dteText ? " " + dteText : ""}`;
+      if (sessionDate && sessionDate > nyToday()) text += " · 오늘 만기는 동부 오후 4시에 끝나 다음 만기로 넘어갔습니다";
+      return text;
     }
 
     let backfillInfo = null;
@@ -548,6 +559,7 @@
       $("rr").className = "mid " + tone(tick.risk_reversal);
       $("ivLine").textContent = `OTM 콜 IV ${pct(tick.otm_call_iv)} · 풋 IV ${pct(tick.otm_put_iv)}`;
       $("meta").textContent = `${tick.symbol} ${fmt(tick.spot)} · ${tick.asof ? clock(tick.asof) : ""} · ${tick.source || ""}`;
+      $("pickExpiry").textContent = expiryLabel(tick.headline_expiry, tick.headline_dte, tick.session_date);
       $("rows").innerHTML = (tick.slices || []).map(s => `
         <tr>
           <td>${s.expiry}</td><td>${s.dte}</td>
@@ -1147,7 +1159,7 @@
         return;
       }
       const when = data.asof ? clock(data.asof) : "—";
-      $("chainMeta").textContent = `${data.symbol || ""} · 만기 ${data.expiry || "—"} (DTE ${data.dte ?? "—"}) · ${data.source || ""} · ${when}`;
+      $("chainMeta").textContent = `${data.symbol || ""} · ${expiryLabel(data.expiry, data.dte, data.session_date) || "만기 —"} · ${data.source || ""} · ${when}`;
       const range = Number($("chainRange").value) || 0;
       let rows = data.rows || [];
       if (range > 0 && spot != null) rows = rows.filter(r => Math.abs(r.strike - spot) <= range);
