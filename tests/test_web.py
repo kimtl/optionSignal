@@ -194,8 +194,8 @@ def test_option_series_endpoint(monkeypatch, tmp_path):
     app = create_app(start_collector=False, interval=60)
     with TestClient(app) as client:
         home = client.get("/")
-        assert 'id="pickStrike"' in home.text
-        assert 'id="pickChips"' in home.text
+        assert 'id="premCard"' in home.text
+        assert 'id="ratioChart"' in home.text
         assert client.get("/api/option_series?keys=100C").json()["series"]["100C"]["bars"] == []
         client.post("/api/tick")
         state["mid"] = 1.5
