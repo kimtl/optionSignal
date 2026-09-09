@@ -569,7 +569,8 @@
     try { const v = localStorage.getItem(CPPI_SEL_KEY); if (v && CPPI_LABELS[v]) cppiSel = v; } catch {}
     let showCppiLine = true;
     try { showCppiLine = localStorage.getItem(CPPI_LINE_KEY) !== "0"; } catch {}
-    const CPPI_COLOR = "#9ecbff";
+    const CPPI_COLOR = "#ffd93d";
+    const CPPI_RGB = "255,217,61";
 
     // History points carry variants as [cppi, call, put]; the live tick carries full objects.
     function variantOf(p, which) {
@@ -782,7 +783,15 @@
       return 2 * 60 * 60 * 1000;
     }
 
-    const OPTION_COLORS = ["#7cb8ff", "#3dd68c", "#ff5d73", "#c78bff", "#4dd0e1", "#ffa657"];
+    // Chart lines: calls in reds, puts in blues (shade varies per pick), CPPI in yellow.
+    const CALL_COLORS = ["#ff4d5e", "#ff8c42", "#ff9eb0", "#c8102e", "#ffb347", "#ff6f91"];
+    const PUT_COLORS = ["#4da3ff", "#7fd4ff", "#2f6fe0", "#9ecbff", "#5c7cfa", "#00b4d8"];
+    function pickColor(key, index) {
+      const put = /P$/i.test(key);
+      const same = picks.slice(0, index).filter(k => /P$/i.test(k) === put).length;
+      const palette = put ? PUT_COLORS : CALL_COLORS;
+      return palette[same % palette.length];
+    }
 
     function optionBarsForTf(bars, minutes) {
       if (minutes === 1) return bars;
@@ -868,7 +877,7 @@
       const bot = nqMin - nqPad;
       const nqSpan = top - bot || 1;
       const nqY = (v) => padT + (top - v) / nqSpan * plotH;
-      ctx.fillStyle = "#f5c15c";
+      ctx.fillStyle = "#d7e1ea";
       ctx.fillText(futCode, 8, padT - 6);
       xAxis = {startTs, endTs, stepMs, padL, padR};
       ctx.fillStyle = "#89a0b5";
@@ -906,7 +915,7 @@
       });
       const lastNq = nqBars[nqBars.length - 1];
       const lastPx = lastNq.nq_close ?? lastNq.futures_price;
-      ctx.strokeStyle = "#f5c15c";
+      ctx.strokeStyle = "#d7e1ea";
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(padL, nqY(lastPx));
@@ -916,7 +925,7 @@
       ctx.fillStyle = "#0b1117";
       const lastLabel = fmt(lastPx, 2);
       ctx.fillRect(4, nqY(lastPx) - 8, padL - 8, 16);
-      ctx.fillStyle = "#f5c15c";
+      ctx.fillStyle = "#d7e1ea";
       ctx.fillText(lastLabel, 8, nqY(lastPx) + 4);
 
       drawRatioChart(xAxis);
@@ -931,12 +940,12 @@
           const cHalf = Math.max((cHi - cLo) / 2 * 1.1, 0.05);
           cLo = Math.max(-1, cMid - cHalf); cHi = Math.min(1, cMid + cHalf);
           const cY = (v) => padT + (1 - (Math.max(cLo, Math.min(cHi, v)) - cLo) / (cHi - cLo)) * plotH;
-          ctx.fillStyle = "rgba(158,203,255,0.55)";
+          ctx.fillStyle = `rgba(${CPPI_RGB},0.55)`;
           ctx.fillText(`CPPI 고 ${cHi.toFixed(2)}`, padL + 6, padT + 10);
           ctx.fillText(`CPPI 저 ${cLo.toFixed(2)}`, padL + 6, padT + plotH - 4);
           const zeroVisible = cLo <= 0 && 0 <= cHi;
           if (zeroVisible) {
-            ctx.strokeStyle = "rgba(158,203,255,0.25)";
+            ctx.strokeStyle = `rgba(${CPPI_RGB},0.25)`;
             ctx.setLineDash([2, 6]);
             ctx.beginPath(); ctx.moveTo(padL, cY(0)); ctx.lineTo(cssW - padR, cY(0)); ctx.stroke();
             ctx.setLineDash([]);
@@ -958,7 +967,7 @@
           ctx.beginPath(); ctx.arc(ex, ey, 2.5, 0, Math.PI * 2); ctx.fill();
           const txt = `CPPI ${end.headline_cppi.toFixed(3)}`;
           ctx.fillText(txt, Math.min(ex + 6, cssW - padR - ctx.measureText(txt).width - 2), ey - 6);
-          ctx.fillStyle = "rgba(158,203,255,0.7)";
+          ctx.fillStyle = `rgba(${CPPI_RGB},0.7)`;
           if (zeroVisible) ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선`, padL + 6, cY(0) - 4);
           else ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선은 구간 밖(${cLo > 0 ? "전부 콜 우세" : "전부 풋 우세"})`, padL + 6, padT + 22);
         }
@@ -969,7 +978,7 @@
       const lines = keys.map((key, i) => {
         const raw = (optionSeries[key] && optionSeries[key].bars) || [];
         const bs = optionBarsForTf(raw, tfMinutes).filter(b => { const t = parseTs(b); return t != null && t >= cutoff; });
-        return {key, color: OPTION_COLORS[i % OPTION_COLORS.length], bars: bs};
+        return {key, color: pickColor(key, i), bars: bs};
       }).filter(l => l.bars.length);
       if (!lines.length) {
         ctx.fillStyle = "#89a0b5";
@@ -1070,7 +1079,7 @@
       if (!picks.length) {
         chips.innerHTML = `<span class="meta">선택한 옵션이 없습니다. 위에서 행사가와 콜/풋을 고르고 추가하세요. 최대 6개.</span>`;
       } else {
-        chips.innerHTML = picks.map((k, i) => `<span class="chip"><i style="background:${OPTION_COLORS[i % OPTION_COLORS.length]}"></i>${keyLabel(k)}<button type="button" data-key="${k}" title="제거">×</button></span>`).join("");
+        chips.innerHTML = picks.map((k, i) => `<span class="chip"><i style="background:${pickColor(k, i)}"></i>${keyLabel(k)}<button type="button" data-key="${k}" title="제거">×</button></span>`).join("");
         chips.querySelectorAll("button[data-key]").forEach(btn => { btn.onclick = () => removePick(btn.dataset.key); });
       }
       $("pickTableCard").style.display = picks.length ? "" : "none";
@@ -1090,7 +1099,7 @@
         const cutoff = Date.now() - 30 * 60 * 1000;
         const older = bars.filter(b => parseTs(b) <= cutoff);
         const d30 = last && older.length ? last.close - older[older.length - 1].close : null;
-        const color = OPTION_COLORS[i % OPTION_COLORS.length];
+        const color = pickColor(k, i);
         const dcls = (v) => v == null ? "" : v > 0 ? "call" : v < 0 ? "put" : "";
         return `<tr>
           <td><span style="background:${color};display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px"></span>${keyLabel(k)}</td>
