@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from optionsignal.collector import LiveHub
-from optionsignal.tasty import FeedConfigError, LiveContract, StreamQuote, snapshot_from_cache
+from optionsignal.tasty import FeedConfigError, LiveContract, StreamQuote, TastyFeed, snapshot_from_cache
 from tests.test_metrics import NOW, quote
 from optionsignal.models import OptionChain
 
@@ -98,6 +98,7 @@ def test_hub_reads_tasty_feed(monkeypatch, tmp_path):
     assert hub.status()["source"] == "tastytrade"
     assert hub.status()["realtime"] is True
     assert hub.status()["session"]["code"] == "tasty"
+    assert hub.live_payload()["points"], "live points should find /NQ ticks stored as NQ"
 
 
 def test_pick_front_future_skips_product_root_style_dates():
@@ -173,3 +174,188 @@ def test_snapshot_raises_not_ready_before_chain():
     feed = TastyFeed(symbol="/NQ")
     with pytest.raises(FeedNotReady, match="체인"):
         feed.snapshot()
+
+
+def test_stream_events_fill_delta_and_day_volume():
+    from types import SimpleNamespace
+
+    from optionsignal.tasty import TastyFeed
+
+    feed = TastyFeed(symbol="/NQ")
+    feed.underlying_symbol = "/NQU26:XCME"
+    feed.contracts = [LiveContract(date(2026, 9, 8), "put", 24700, "./NQU26P24700", 12)]
+    feed._apply_quote(SimpleNamespace(event_symbol="./NQU26P24700", bid_price=24, ask_price=26, bid_size=3, ask_size=4))
+    feed._apply_greeks(SimpleNamespace(event_symbol="./NQU26P24700", volatility=0.21, delta=-0.42, price=25.5))
+    feed._apply_trade(SimpleNamespace(event_symbol="./NQU26P24700", price=25.25, day_volume=1832))
+    feed._apply_trade(SimpleNamespace(event_symbol="/NQU26:XCME", price=24712.5, day_volume=500000))
+    chain = feed.snapshot()
+    put = chain.quotes[0]
+    assert put.delta == -0.42
+    assert put.volume == 1832
+    assert put.last == 25.25
+    assert put.open_interest == 12
+    assert chain.spot == 24712.5
+
+
+def test_chain_table_pairs_calls_and_puts_by_strike():
+    from optionsignal.signal import chain_table
+
+    expiry = date(2026, 9, 8)
+    quotes = [
+        quote("call", 24700, 60.0, volume=900, iv=0.20, expiry=expiry),
+        quote("put", 24700, 58.0, volume=1200, iv=0.21, expiry=expiry),
+        quote("call", 24725, 48.0, volume=300, iv=0.20, expiry=expiry),
+        quote("call", 24750, 40.0, volume=100, iv=0.20, expiry=date(2026, 9, 9)),
+    ]
+    chain = OptionChain(symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+                        asof=NOW, quotes=quotes, multiplier=20, source="tastytrade")
+    table = chain_table(chain, max_dte=0)
+    assert table["expiry"] == "2026-09-08"
+    assert table["dte"] == 0
+    assert table["atm"] == 24700
+    assert [r["strike"] for r in table["rows"]] == [24700, 24725]
+    row = table["rows"][0]
+    assert row["call"]["volume"] == 900
+    assert row["put"]["volume"] == 1200
+    assert row["put"]["open_interest"] == 1200
+    # No feed delta on these quotes, so it is modelled from IV: call ~0.5+, put = call - 1.
+    assert row["call"]["delta_source"] == "model"
+    assert 0.4 < row["call"]["delta"] < 0.7
+    assert -0.6 < row["put"]["delta"] < -0.3
+    assert table["rows"][1]["put"] is None
+
+
+def test_candle_to_bar_strips_candle_suffix_and_reads_ms_time():
+    from types import SimpleNamespace
+
+    from optionsignal.tasty import _candle_to_bar
+
+    ev = SimpleNamespace(event_symbol="./NQU26C24700:XCME{=1m,tho=true}", time=1788600000000,
+                         open=41.0, high=43.0, low=40.5, close=42.25, volume=17)
+    symbol, ts_ms, bar = _candle_to_bar(ev)
+    assert symbol == "./NQU26C24700:XCME"
+    assert ts_ms == 1788600000000
+    assert bar["asof"].startswith("2026-09-")
+    assert bar["close"] == 42.25 and bar["high"] == 43.0 and bar["volume"] == 17
+    assert _candle_to_bar(SimpleNamespace(event_symbol="/NQU26:XCME{=1m}", time=1788600000000, close=None)) is None
+
+
+def test_hub_backfill_saves_future_and_option_candles(tmp_path, monkeypatch):
+    import asyncio
+
+    from optionsignal.store import load_bars, load_option_series
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=10)
+    t0, t1 = base.isoformat(timespec="seconds"), (base + timedelta(minutes=1)).isoformat(timespec="seconds")
+
+    class Feed:
+        contracts = [LiveContract(date(2026, 9, 8), "call", 24700, "./NQU26C24700:XCME", 10),
+                     LiveContract(date(2026, 9, 8), "put", 24700, "./NQU26P24700:XCME", 10)]
+        underlying_symbol = "/NQU26:XCME"
+        _session = object()
+        expiry = date(2026, 9, 8)
+        ready = True
+        streaming = False
+        error = None
+
+        async def fetch_candles(self, hours=12):
+            return {
+                "/NQU26:XCME": [
+                    {"asof": t0, "open": 24600, "high": 24610, "low": 24590, "close": 24605, "volume": 100},
+                    {"asof": t1, "open": 24605, "high": 24620, "low": 24600, "close": 24615, "volume": 90},
+                ],
+                "./NQU26C24700:XCME": [{"asof": t1, "close": 55.5, "volume": 3}],
+            }
+
+    hub = LiveHub(symbol="/NQ", interval=5, tasty_feed=Feed())
+    hub._running = True
+    summary = asyncio.run(hub.backfill_history(hours=12))
+    assert summary == {"source": "tastytrade", "nq_bars": 2, "options": 1, "expiry": "2026-09-08"}
+    assert [b["close"] for b in load_bars("NQ", "NQ")] == [24605, 24615]
+    assert load_option_series("NQ", "24700C")[0]["price"] == 55.5
+    assert load_option_series("NQ", "24700C", expiry="2026-09-08")[0]["price"] == 55.5
+    assert load_option_series("NQ", "24700C", expiry="2026-09-09") == []
+    assert load_option_series("NQ", "24700P") == []
+    assert hub.status()["backfill"]["nq_bars"] == 2
+    points = hub.live_payload()["points"]
+    assert len(points) == 2
+    assert points[0]["nq_close"] == 24605 and points[0]["headline_cppi"] is None
+
+
+def test_hub_backfill_uses_yahoo_without_tasty(tmp_path, monkeypatch):
+    import asyncio
+
+    from optionsignal.store import load_bars
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
+    from datetime import datetime, timedelta, timezone
+
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="seconds")
+    monkeypatch.setattr(
+        "optionsignal.collector.fetch_price_history",
+        lambda symbol, hours: [{"asof": recent, "open": 480, "high": 481, "low": 479.5, "close": 480.5, "volume": 1000}],
+    )
+    hub = LiveHub(symbol="QQQ", interval=60)
+    hub._running = True
+    summary = asyncio.run(hub.backfill_history(hours=12))
+    assert summary["source"] == "yahoo" and summary["nq_bars"] == 1
+    assert load_bars("QQQ", "NQ")[0]["close"] == 480.5
+
+
+def test_load_instruments_rolls_to_next_expiry_after_close(monkeypatch):
+    import asyncio
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    today, tomorrow = date(2026, 9, 8), date(2026, 9, 9)
+
+    def option(expiry, strike, right):
+        return SimpleNamespace(
+            expiration_date=expiry, strike_price=strike, option_type=right,
+            streamer_symbol=f"./NQU26{right}{strike}:XCME@{expiry:%d}", symbol=f"NQU26 {expiry:%y%m%d}{right}{strike}",
+            days_to_expiration=(expiry - today).days, open_interest=5,
+        )
+
+    chain = {
+        today: [option(today, s, r) for s in (24650, 24700, 24750) for r in ("C", "P")],
+        tomorrow: [option(tomorrow, s, r) for s in (24650, 24700, 24750) for r in ("C", "P")],
+    }
+
+    async def fake_future_chain(session, root):
+        return chain
+
+    fake_instruments = types.ModuleType("tastytrade.instruments")
+    fake_instruments.Future = object
+    fake_instruments.get_future_option_chain = fake_future_chain
+    fake_instruments.get_option_chain = fake_future_chain
+    monkeypatch.setitem(sys.modules, "tastytrade.instruments", fake_instruments)
+
+    async def no_future(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("optionsignal.tasty._front_future", no_future)
+
+    feed = TastyFeed(symbol="/NQ", max_dte=0)
+    feed._spot = 24700.0
+
+    monkeypatch.setattr("optionsignal.tasty.session_date", lambda now=None: today)
+    asyncio.run(feed._load_instruments(session=None))
+    assert feed.session == today and feed.expiry == today
+    assert {c.expiry for c in feed.contracts} == {today}
+    assert not feed.rolled_over()
+
+    # 4pm New York passed: the same chain now yields tomorrow's contracts as 0DTE.
+    monkeypatch.setattr("optionsignal.tasty.session_date", lambda now=None: tomorrow)
+    assert feed.rolled_over()
+    assert feed.phase == "rollover"
+    feed.quotes["./NQU26C24700:XCME@08"] = StreamQuote(bid=1, ask=2)
+    asyncio.run(feed._load_instruments(session=None))
+    assert feed.session == tomorrow and feed.expiry == tomorrow
+    assert {c.expiry for c in feed.contracts} == {tomorrow}
+    assert "./NQU26C24700:XCME@08" not in feed.quotes  # stale expired-contract quotes dropped

@@ -268,7 +268,7 @@
         <p class="meta" id="meta"></p>
       </article>
       <article class="card" id="pickCard">
-        <div class="label">옵션 선택 · 차트에 추가</div>
+        <div class="label">옵션 선택 · 차트에 추가 <span id="pickExpiry" class="meta"></span></div>
         <div class="pick-row">
           <select id="pickStrike"><option value="">행사가…</option></select>
           <select id="pickRight">
@@ -397,9 +397,29 @@
       return `${hours}시간`;
     }
 
+    function nyToday() {
+      return new Date().toLocaleDateString("en-CA", {timeZone: "America/New_York"});
+    }
+    function expiryLabel(expiry, dte, sessionDate) {
+      if (!expiry) return "";
+      const dteText = dte == null ? "" : (dte === 0 ? "0DTE" : `${dte}DTE`);
+      let text = `· 만기 ${expiry.slice(5)}${dteText ? " " + dteText : ""}`;
+      if (sessionDate && sessionDate > nyToday()) text += " · 오늘 만기는 동부 오후 4시에 끝나 다음 만기로 넘어갔습니다";
+      return text;
+    }
+
+    let backfillInfo = null;
     function chartHint() {
       const opt = (typeof picks !== "undefined" && picks.length) ? ` · 옵션 ${picks.length}개 선(오른쪽 축, 중간가)` : "";
-      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · NQ 선물 캔들(왼쪽 축)${opt} · 휠로 확대/축소`;
+      let hist = "";
+      if (backfillInfo) {
+        if (backfillInfo.nq_bars) {
+          hist = ` · 과거 ${backfillInfo.nq_bars}분 불러옴(${backfillInfo.source === "tastytrade" ? "dxFeed" : "Yahoo"}${backfillInfo.options ? `, 옵션 ${backfillInfo.options}개` : ""})`;
+        } else if (backfillInfo.source) {
+          hist = " · 과거 시세 없음(서버 시작 이후만)";
+        }
+      }
+      return `${tfMinutes}분봉 · ${hoursLabel(chartHours)} · NQ 선물 캔들(왼쪽 축)${opt}${hist} · 휠로 확대/축소`;
     }
 
     function parseTs(p) {
@@ -418,15 +438,15 @@
       const buckets = new Map();
       for (const p of list || []) {
         const ts = parseTs(p);
-        const close = p.close ?? p.headline_cppi;
-        if (ts == null || close == null) continue;
-        const key = floorBar(ts, minutes);
-        const high = p.high ?? close;
-        const low = p.low ?? close;
-        const open = p.open ?? close;
-        const callP = p.headline_call_premium || 0;
-        const putP = p.headline_put_premium || 0;
+        const close = p.close ?? p.headline_cppi ?? null;
         const nqClose = p.nq_close ?? p.futures_price ?? null;
+        if (ts == null || (close == null && nqClose == null)) continue;
+        const key = floorBar(ts, minutes);
+        const high = close == null ? null : (p.high ?? close);
+        const low = close == null ? null : (p.low ?? close);
+        const open = close == null ? null : (p.open ?? close);
+        const callP = close == null ? null : (p.headline_call_premium || 0);
+        const putP = close == null ? null : (p.headline_put_premium || 0);
         const nqHigh = p.nq_high ?? nqClose;
         const nqLow = p.nq_low ?? nqClose;
         const nqOpen = p.nq_open ?? nqClose;
@@ -451,12 +471,19 @@
           });
           continue;
         }
-        prev.high = Math.max(prev.high, high);
-        prev.low = Math.min(prev.low, low);
-        prev.close = close;
-        prev.headline_cppi = close;
-        prev.headline_call_premium = callP;
-        prev.headline_put_premium = putP;
+        if (close != null) {
+          if (prev.close == null) {
+            prev.open = open; prev.high = high; prev.low = low;
+            prev._firstCall = callP; prev._firstPut = putP;
+          } else {
+            prev.high = Math.max(prev.high, high);
+            prev.low = Math.min(prev.low, low);
+          }
+          prev.close = close;
+          prev.headline_cppi = close;
+          prev.headline_call_premium = callP;
+          prev.headline_put_premium = putP;
+        }
         if (nqClose != null) {
           if (prev.nq_open == null) prev.nq_open = nqOpen;
           prev.nq_high = prev.nq_high == null ? nqHigh : Math.max(prev.nq_high, nqHigh);
@@ -467,10 +494,16 @@
       const out = [];
       let prevClose = null;
       for (const bar of buckets.values()) {
-        bar.call_premium_delta_1m = bar.headline_call_premium - bar._firstCall;
-        bar.put_premium_delta_1m = bar.headline_put_premium - bar._firstPut;
-        bar.cppi_delta_1m = prevClose == null ? null : bar.close - prevClose;
-        prevClose = bar.close;
+        if (bar.close == null) {
+          bar.call_premium_delta_1m = null;
+          bar.put_premium_delta_1m = null;
+          bar.cppi_delta_1m = null;
+        } else {
+          bar.call_premium_delta_1m = bar.headline_call_premium - bar._firstCall;
+          bar.put_premium_delta_1m = bar.headline_put_premium - bar._firstPut;
+          bar.cppi_delta_1m = prevClose == null ? null : bar.close - prevClose;
+          prevClose = bar.close;
+        }
         delete bar._firstCall;
         delete bar._firstPut;
         out.push(bar);
@@ -526,6 +559,7 @@
       $("rr").className = "mid " + tone(tick.risk_reversal);
       $("ivLine").textContent = `OTM 콜 IV ${pct(tick.otm_call_iv)} · 풋 IV ${pct(tick.otm_put_iv)}`;
       $("meta").textContent = `${tick.symbol} ${fmt(tick.spot)} · ${tick.asof ? clock(tick.asof) : ""} · ${tick.source || ""}`;
+      $("pickExpiry").textContent = expiryLabel(tick.headline_expiry, tick.headline_dte, tick.session_date);
       $("rows").innerHTML = (tick.slices || []).map(s => `
         <tr>
           <td>${s.expiry}</td><td>${s.dte}</td>
@@ -576,6 +610,7 @@
     function paintStatus(status) {
       if (!status) return;
       intervalSec = status.interval || 60;
+      if ("backfill" in status) backfillInfo = status.backfill;
       const sess = status.session || {};
       $("session").textContent = sess.label_ko || "세션";
       $("session").className = "pill" + (sess.live ? " live" : " hot");
@@ -1124,7 +1159,7 @@
         return;
       }
       const when = data.asof ? clock(data.asof) : "—";
-      $("chainMeta").textContent = `${data.symbol || ""} · 만기 ${data.expiry || "—"} (DTE ${data.dte ?? "—"}) · ${data.source || ""} · ${when}`;
+      $("chainMeta").textContent = `${data.symbol || ""} · ${expiryLabel(data.expiry, data.dte, data.session_date) || "만기 —"} · ${data.source || ""} · ${when}`;
       const range = Number($("chainRange").value) || 0;
       let rows = data.rows || [];
       if (range > 0 && spot != null) rows = rows.filter(r => Math.abs(r.strike - spot) <= range);

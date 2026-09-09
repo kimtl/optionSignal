@@ -9,11 +9,13 @@ from .metrics import (
     bias_from_metrics,
     call_delta,
     call_put_premium_imbalance,
+    days_to_expiry,
     nearest_quote,
     premium_ratio,
     risk_reversal_iv,
     sane_iv,
     select_near_otm,
+    session_date,
     strike_range,
     total_volume,
     volume_premium,
@@ -30,7 +32,8 @@ DEFAULT_HEADLINE_DTE = 0
 
 
 def _dte(expiry, now: datetime) -> int:
-    return (expiry - now.astimezone(NY).date()).days
+    """DTE against the option session: today's expiry is -1 (gone) once 4pm NY has passed."""
+    return days_to_expiry(expiry, now)
 
 
 def _group_by_expiry(quotes: list[OptionQuote]) -> dict:
@@ -166,6 +169,9 @@ def build_report(
         otm_points=otm_points,
         headline_call_strikes=strike_range(headline_calls),
         headline_put_strikes=strike_range(headline_puts),
+        headline_expiry=nearest_expiry.isoformat() if nearest_expiry else None,
+        headline_dte=_dte(nearest_expiry, now) if nearest_expiry else None,
+        session_date=session_date(now).isoformat(),
     )
 
 
@@ -229,7 +235,13 @@ def chain_table(chain: OptionChain, max_dte: int = DEFAULT_HEADLINE_DTE) -> dict
         row[quote.right] = _side(quote, chain.spot, t)
     rows = [by_strike[k] for k in sorted(by_strike)]
     atm = atm_strike(quotes, chain.spot)
-    base.update({"expiry": expiry.isoformat(), "dte": _dte(expiry, now), "atm": atm, "rows": rows})
+    base.update({
+        "expiry": expiry.isoformat(),
+        "dte": _dte(expiry, now),
+        "session_date": session_date(now).isoformat(),
+        "atm": atm,
+        "rows": rows,
+    })
     return base
 
 

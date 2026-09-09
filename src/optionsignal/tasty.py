@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .metrics import option_mid, sane_iv
+from .metrics import option_mid, sane_iv, session_date
 from .models import OptionChain, OptionQuote
 from .settings import env_str
 
@@ -65,6 +67,39 @@ def _right(option_type: object, streamer_symbol: str = "") -> str:
     if match:
         return "put" if match.group(1) == "P" else "call"
     return "call"
+
+
+def _candle_to_bar(event) -> tuple[str, int, dict] | None:
+    """dxFeed Candle -> (streamer_symbol without {=1m,...}, ts_ms, bar dict)."""
+    raw_symbol = getattr(event, "event_symbol", None) or getattr(event, "eventSymbol", None)
+    if not raw_symbol:
+        return None
+    symbol = str(raw_symbol).split("{", 1)[0]
+    close = _num(getattr(event, "close", None))
+    if close is None or close <= 0:
+        return None
+    when = getattr(event, "time", None)
+    if isinstance(when, datetime):
+        ts_ms = int(when.timestamp() * 1000)
+    else:
+        ts_ms = int(_num(when) or 0)
+        if ts_ms and ts_ms < 10_000_000_000:  # seconds, not ms
+            ts_ms *= 1000
+    if not ts_ms:
+        return None
+    ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    open_ = _num(getattr(event, "open", None))
+    high = _num(getattr(event, "high", None))
+    low = _num(getattr(event, "low", None))
+    volume = _num(getattr(event, "volume", None))
+    return symbol, ts_ms, {
+        "asof": ts.isoformat(timespec="seconds"),
+        "open": open_ if open_ else close,
+        "high": high if high else close,
+        "low": low if low else close,
+        "close": close,
+        "volume": int(volume) if volume and volume > 0 else 0,
+    }
 
 
 @dataclass
@@ -177,6 +212,47 @@ class TastyFeed:
         self.error: str | None = None
         self._running = False
         self._spot: float | None = None
+        self._session = None
+        self.session: date | None = None  # NY date whose expiry we currently treat as 0DTE
+        self.expiry: date | None = None
+
+    async def fetch_candles(self, hours: int = 12, idle_seconds: float = 2.5, max_seconds: float = 40.0) -> dict[str, list[dict]]:
+        """Pull 1m dxFeed candles for the future and every streamed contract.
+
+        Returns {streamer_symbol: [{asof, open, high, low, close, volume}, ...]}. Uses its
+        own DXLink connection so the live quote stream is not disturbed. Best effort:
+        stops after `idle_seconds` without new events or `max_seconds` overall.
+        """
+        import asyncio
+
+        from tastytrade import DXLinkStreamer
+        from tastytrade.dxfeed import Candle
+
+        session = self._session
+        if session is None or not self.underlying_symbol:
+            return {}
+        symbols = [self.underlying_symbol, *[c.streamer_symbol for c in self.contracts]]
+        start = datetime.now(tz=NY) - timedelta(hours=hours)
+        out: dict[str, dict[int, dict]] = {}
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + max_seconds
+        async with DXLinkStreamer(session) as streamer:
+            await streamer.subscribe_candle(symbols, "1m", start_time=start, extended_trading_hours=True)
+            while loop.time() < deadline:
+                try:
+                    event = await asyncio.wait_for(streamer.get_event(Candle), timeout=idle_seconds)
+                except asyncio.TimeoutError:
+                    break
+                bar = _candle_to_bar(event)
+                if bar is None:
+                    continue
+                symbol, ts_ms, row = bar
+                out.setdefault(symbol, {})[ts_ms] = row
+        result = {}
+        for symbol, rows in out.items():
+            result[symbol] = [rows[k] for k in sorted(rows)]
+        log.info("dxFeed candles: %s symbols, %s bars", len(result), sum(len(v) for v in result.values()))
+        return result
 
     @property
     def quoted_count(self) -> int:
@@ -236,6 +312,17 @@ class TastyFeed:
     def stop(self) -> None:
         self._running = False
 
+    def rolled_over(self) -> bool:
+        """True once 4pm New York passed since the chain was loaded: reload for the next expiry."""
+        if self.session is None:
+            return False
+        if session_date() == self.session:
+            return False
+        log.info("option session rolled %s -> %s; reloading chain", self.session, session_date())
+        self.phase = "rollover"
+        self.streaming = False
+        return True
+
     async def _run_once(self) -> None:
         import asyncio
 
@@ -248,6 +335,7 @@ class TastyFeed:
         self.phase = "login"
         log.info("tastytrade login (test=%s)", is_test)
         async with Session(secret, refresh, is_test=is_test, timeout=20.0) as session:
+            self._session = session
             self.phase = "chain"
             await self._load_instruments(session)
             await self._hydrate_quotes_rest(session)
@@ -269,7 +357,7 @@ class TastyFeed:
                 self.streaming = False
                 self.error = f"DXLink: {exc}"
                 log.exception("DXLink failed; falling back to REST quotes")
-                while self._running:
+                while self._running and not self.rolled_over():
                     await self._hydrate_quotes_rest(session)
                     self.phase = "quotes"
                     await asyncio.sleep(5)
@@ -285,12 +373,14 @@ class TastyFeed:
         async with DXLinkStreamer(session) as streamer:
             await streamer.subscribe(Quote, symbols)
             await streamer.subscribe(Greeks, [c.streamer_symbol for c in self.contracts])
-            if self.underlying_symbol:
-                await streamer.subscribe(Trade, [self.underlying_symbol])
+            # Trade carries day_volume for the options and the live price for the future.
+            await streamer.subscribe(Trade, symbols)
             self.phase = "live"
             self.streaming = True
             self.error = None
             while self._running:
+                if self.rolled_over():
+                    return
                 drained = False
                 while True:
                     event = streamer.get_event_nowait(Quote)
@@ -335,22 +425,33 @@ class TastyFeed:
             return
         live = self.quotes.setdefault(symbol, StreamQuote())
         live.iv = _num(getattr(event, "volatility", None))
+        delta = _num(getattr(event, "delta", None))
+        if delta is not None and math.isfinite(delta):
+            live.delta = delta
         last = _num(getattr(event, "price", None))
         if last:
             live.last = last
 
     def _apply_trade(self, event) -> None:
         symbol = getattr(event, "event_symbol", None) or getattr(event, "eventSymbol", None)
+        if not symbol:
+            return
         price = _num(getattr(event, "price", None))
+        live = self.quotes.setdefault(symbol, StreamQuote())
+        if price:
+            live.last = price
+        volume = _num(getattr(event, "day_volume", None) or getattr(event, "dayVolume", None))
+        if volume is not None and volume >= 0:
+            live.day_volume = int(volume)
         if symbol == self.underlying_symbol and price:
             self._spot = price
-            live = self.quotes.setdefault(symbol, StreamQuote())
-            live.last = price
 
     async def _load_instruments(self, session) -> None:
         from tastytrade.instruments import Future, get_future_option_chain, get_option_chain
 
-        today = datetime.now(tz=NY).date()
+        # After 4pm New York today's contracts are gone; the next session's expiry is the 0DTE one.
+        today = session_date()
+        self.session = today
         contracts: list[LiveContract] = []
         spot = None
         underlying = None
@@ -377,9 +478,11 @@ class TastyFeed:
                 if expiry_date is None:
                     continue
                 dte_cal = (expiry_date - today).days
+                if dte_cal < 0:
+                    continue  # expired (or expiring at 4pm today when we are already past it)
                 dte_api = getattr(option, "days_to_expiration", None)
                 dte = dte_cal if dte_api is None else min(dte_cal, int(dte_api))
-                if dte < 0 or dte > self.max_dte:
+                if dte > self.max_dte:
                     continue
                 strike = _num(getattr(option, "strike_price", None))
                 streamer = getattr(option, "streamer_symbol", None)
@@ -392,11 +495,11 @@ class TastyFeed:
                 contracts.append(
                     LiveContract(
                         expiry=expiry_date,
-                        right=_right(getattr(option, "option_type", "C")),
+                        right=_right(getattr(option, "option_type", "C"), f"{streamer} {occ}"),
                         strike=strike,
                         streamer_symbol=str(streamer),
                         open_interest=oi,
-                        occ_symbol=str(getattr(option, "symbol", "") or ""),
+                        occ_symbol=occ,
                     )
                 )
         if not contracts:
@@ -416,8 +519,11 @@ class TastyFeed:
             strikes = sorted({c.strike for c in contracts})
             spot = strikes[len(strikes) // 2]
         self.contracts = nearest_contracts(contracts, spot)
+        keep = {c.streamer_symbol for c in self.contracts} | ({str(underlying)} if underlying else set())
+        self.quotes = {k: v for k, v in self.quotes.items() if k in keep}
         self.underlying_symbol = str(underlying) if underlying else None
         self._spot = spot
+        self.expiry = min(c.expiry for c in self.contracts)
 
     async def _hydrate_quotes_rest(self, session) -> None:
         from tastytrade.market_data import get_market_data_by_type
@@ -448,6 +554,12 @@ class TastyFeed:
                     live.bid_size = _num(getattr(row, "bid_size", None)) or 0.0
                     live.ask_size = _num(getattr(row, "ask_size", None)) or 0.0
                     live.iv = sane_iv(_num(getattr(row, "implied_volatility", None)))
+                    volume = _num(getattr(row, "volume", None))
+                    if volume is not None and volume > 0:
+                        live.day_volume = int(volume)
+                    oi = _num(getattr(row, "open_interest", None))
+                    if oi is not None and oi > 0:
+                        contract.open_interest = int(oi)
         except Exception as exc:  # noqa: BLE001
             log.warning("REST quotes failed: %s", exc)
 

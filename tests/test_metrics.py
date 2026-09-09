@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -193,3 +193,59 @@ def test_bias_thresholds():
     assert "콜" in ko
     bias, score, _, _ = bias_from_metrics(0.0, 0.0, 0.0)
     assert bias == "neutral" and score == 0
+
+
+def test_session_date_rolls_to_next_day_at_4pm_new_york():
+    from datetime import timedelta
+
+    from optionsignal.metrics import days_to_expiry, session_date
+
+    before = datetime(2026, 9, 8, 15, 59, tzinfo=NY)
+    at_close = datetime(2026, 9, 8, 16, 0, tzinfo=NY)
+    evening_utc = datetime(2026, 9, 8, 22, 30, tzinfo=timezone.utc)  # 18:30 New York
+    assert session_date(before) == date(2026, 9, 8)
+    assert session_date(at_close) == date(2026, 9, 9)
+    assert session_date(evening_utc) == date(2026, 9, 9)
+    assert days_to_expiry(date(2026, 9, 8), before) == 0
+    assert days_to_expiry(date(2026, 9, 8), at_close) == -1
+    assert days_to_expiry(date(2026, 9, 9), at_close) == 0
+    # Friday evening: Saturday has no expiry, Monday is the nearest living one (DTE 2).
+    friday_night = datetime(2026, 9, 11, 19, 0, tzinfo=NY)
+    assert session_date(friday_night) == date(2026, 9, 12)
+    assert days_to_expiry(date(2026, 9, 14), friday_night) == 2
+    assert session_date(before + timedelta(hours=24)) == date(2026, 9, 9)
+
+
+def test_build_report_after_close_uses_next_expiry_as_0dte():
+    from optionsignal.signal import chain_table, front_expiry_quotes
+
+    today, tomorrow = date(2026, 9, 8), date(2026, 9, 9)
+    quotes = []
+    for strike in range(24600, 24825, 25):
+        quotes.append(quote("call", strike, 10.0, volume=50, expiry=today))
+        quotes.append(quote("put", strike, 10.0, volume=10, expiry=today))
+        quotes.append(quote("call", strike, 30.0, volume=20, expiry=tomorrow))
+        quotes.append(quote("put", strike, 30.0, volume=20, expiry=tomorrow))
+    evening = datetime(2026, 9, 8, 16, 5, tzinfo=NY)
+    chain = OptionChain(
+        symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+        asof=evening, quotes=quotes, multiplier=20, source="test",
+    )
+    report = build_report(chain, max_dte=0)
+    assert report.session_date == "2026-09-09"
+    assert report.headline_expiry == "2026-09-09"
+    assert report.headline_dte == 0
+    assert report.headline_cppi == 0.0  # tomorrow's calls == puts; today's expired contracts ignored
+    assert [s.expiry for s in report.slices] == ["2026-09-09"]
+    expiry, front = front_expiry_quotes(chain, 0)
+    assert expiry == tomorrow and all(q.expiry == tomorrow for q in front)
+    table = chain_table(chain, 0)
+    assert table["expiry"] == "2026-09-09" and table["dte"] == 0 and table["session_date"] == "2026-09-09"
+
+    noon = datetime(2026, 9, 8, 12, 0, tzinfo=NY)
+    chain_noon = OptionChain(
+        symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+        asof=noon, quotes=quotes, multiplier=20, source="test",
+    )
+    day_report = build_report(chain_noon, max_dte=0)
+    assert day_report.headline_expiry == "2026-09-08" and day_report.headline_cppi > 0.5

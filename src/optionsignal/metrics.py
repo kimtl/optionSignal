@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .models import OptionQuote, Right
@@ -31,13 +31,42 @@ def sane_iv(iv: float | None) -> float | None:
     return float(iv)
 
 
-def year_fraction(expiry: date, now: datetime | None = None) -> float:
-    """Time to 4pm New York expiry, floored at 30 minutes so 0DTE greeks don't explode."""
+EXPIRY_TIME = time(16, 0)  # NQ weekly/daily options and QQQ/NDX expire 4:00pm New York
+
+
+def _ny(now: datetime | None) -> datetime:
     now = now or datetime.now(tz=NY)
     if now.tzinfo is None:
         now = now.replace(tzinfo=NY)
-    now = now.astimezone(NY)
-    expiry_dt = datetime.combine(expiry, time(16, 0), tzinfo=NY)
+    return now.astimezone(NY)
+
+
+def session_date(now: datetime | None = None) -> date:
+    """The date whose expiry counts as 0DTE right now.
+
+    Until 4:00pm New York that is today; from 4:00pm on, today's contracts have
+    expired and the next calendar day becomes the "0DTE" session (Friday evening
+    rolls to Saturday, which has no expiry, so the nearest living expiry is Monday).
+    """
+    now = _ny(now)
+    if now.time() >= EXPIRY_TIME:
+        return now.date() + timedelta(days=1)
+    return now.date()
+
+
+def days_to_expiry(expiry: date, now: datetime | None = None) -> int:
+    """Calendar DTE relative to the current session; -1 means already expired."""
+    return (expiry - session_date(now)).days
+
+
+def expiry_datetime(expiry: date) -> datetime:
+    return datetime.combine(expiry, EXPIRY_TIME, tzinfo=NY)
+
+
+def year_fraction(expiry: date, now: datetime | None = None) -> float:
+    """Time to 4pm New York expiry, floored at 30 minutes so 0DTE greeks don't explode."""
+    now = _ny(now)
+    expiry_dt = expiry_datetime(expiry)
     seconds = (expiry_dt - now).total_seconds()
     seconds = max(seconds, 30 * 60)
     return seconds / (365.25 * 24 * 3600)

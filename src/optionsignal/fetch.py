@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 
-from .metrics import option_mid, sane_iv
+from .metrics import option_mid, sane_iv, session_date
 from .models import OptionChain, OptionQuote
 
 NY = ZoneInfo("America/New_York")
@@ -107,7 +107,8 @@ def fetch_chain(
         )
 
     now = now or datetime.now(tz=NY)
-    today = now.astimezone(NY).date()
+    # From 4pm New York today's expiry is dead; the next session's expiry is the 0DTE one.
+    today = session_date(now)
     ticker = yf.Ticker(symbol)
     spot = _last_price(ticker)
 
@@ -136,7 +137,7 @@ def fetch_chain(
     if not quotes:
         expiries = ", ".join(list(ticker.options)[:6]) or "없음"
         raise RuntimeError(
-            f"{symbol} 0DTE 옵션을 못 읽었습니다 (오늘 {today.isoformat()}, DTE≤{max_dte}). "
+            f"{symbol} 0DTE 옵션을 못 읽었습니다 (세션 {today.isoformat()}, DTE≤{max_dte}). "
             f"Yahoo 만기: {expiries}. 주말이거나 Yahoo가 이 서버 IP를 막았을 수 있습니다."
         )
 
@@ -150,3 +151,38 @@ def fetch_chain(
         multiplier=MULTIPLIERS.get(symbol.upper(), 100),
         source="yahoo",
     )
+
+
+def fetch_price_history(symbol: str = FUTURES_SYMBOL, hours: int = 12) -> list[dict]:
+    """Yahoo 1-minute candles for the last `hours` (delayed; used when there is no tastytrade).
+
+    Futures roots (/NQ, NQ) map to NQ=F. Returns [{asof, open, high, low, close, volume}].
+    """
+    yahoo = symbol.upper()
+    if yahoo.lstrip("/") in {"NQ", "MNQ"}:
+        yahoo = FUTURES_SYMBOL
+    # Yahoo's "1d"/"2d" windows start at midnight New York, so an overnight futures
+    # session is cut off. "5d" returns the full minute history (1m allows up to 7d).
+    frame = yf.Ticker(yahoo).history(period="5d", interval="1m", prepost=True, auto_adjust=False)
+    if frame is None or frame.empty:
+        return []
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)
+    out: list[dict] = []
+    for ts, row in frame.iterrows():
+        stamp = pd.Timestamp(ts)
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        if stamp < cutoff:
+            continue
+        close = _to_float(row.get("Close"))
+        if close is None or close <= 0:
+            continue
+        out.append({
+            "asof": stamp.tz_convert("UTC").isoformat(timespec="seconds"),
+            "open": _to_float(row.get("Open")) or close,
+            "high": _to_float(row.get("High")) or close,
+            "low": _to_float(row.get("Low")) or close,
+            "close": close,
+            "volume": _to_int(row.get("Volume")),
+        })
+    return out

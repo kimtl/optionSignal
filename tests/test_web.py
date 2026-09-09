@@ -68,6 +68,29 @@ def test_shared_minute_board(monkeypatch, tmp_path):
         assert health.json()["source"] in {"yahoo", "tastytrade"}
 
 
+def test_settings_switches_otm_points(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", lambda **kwargs: _chain())
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert 'id="otmPoints"' in home.text
+        assert "등가격 ±100포" in home.text
+        base = client.post("/api/tick").json()["tick"]
+        assert base["otm_points"] is None
+        assert base["headline_call_strikes"] == [100, 104]
+        res = client.post("/api/settings?otm_points=2")
+        assert res.status_code == 200
+        tick = res.json()["tick"]
+        assert tick["otm_points"] == 2
+        assert tick["headline_call_strikes"] == [100, 102]
+        assert tick["headline_put_strikes"] == [98, 100]
+        assert res.json()["status"]["otm_points"] == 2
+        back = client.post("/api/settings?otm_points=0").json()
+        assert back["tick"]["otm_points"] is None
+        assert back["status"]["otm_points"] is None
+
+
 def test_live_does_not_502_when_tick_failed(tmp_path, monkeypatch):
     monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
     app = create_app(start_collector=False, interval=60)
@@ -94,6 +117,21 @@ def test_tick_nq_without_tasty_is_config_error(tmp_path, monkeypatch):
         assert live.json()["status"]["error"]
 
 
+def test_minutes_endpoint_strips_futures_slash(tmp_path, monkeypatch):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    from optionsignal.store import save_snapshot
+
+    save_snapshot({"symbol": "NQ", "asof": "2026-09-08T10:01:00-04:00", "headline_cppi": 0.2, "futures_price": 24700})
+    app = create_app(symbol="/NQ", start_collector=False, interval=5)
+    with TestClient(app) as client:
+        res = client.get("/api/minutes?tf=5")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["tf"] == 5
+        assert len(body["points"]) == 1
+        assert body["points"][0]["nq_close"] == 24700
+
+
 def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):
     monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
 
@@ -117,3 +155,57 @@ def test_tick_tasty_connecting_is_503(tmp_path, monkeypatch):
         res = client.post("/api/tick")
         assert res.status_code == 503
         assert "연결" in res.json()["detail"]
+
+
+def test_chain_endpoint_returns_rows(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", lambda **kwargs: _chain())
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert 'id="tabChain"' in home.text
+        assert 'id="chainRows"' in home.text
+        empty = client.get("/api/chain")
+        assert empty.status_code == 200
+        assert empty.json()["rows"] == []
+        client.post("/api/tick")
+        res = client.get("/api/chain")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["spot"] == 100.0
+        assert body["atm"] == 100
+        strikes = [r["strike"] for r in body["rows"]]
+        assert strikes == [96, 98, 100, 102, 104]
+        atm_row = body["rows"][2]
+        assert atm_row["call"]["volume"] == 80
+        assert atm_row["put"]["open_interest"] == 40
+        assert atm_row["call"]["delta"] is not None
+
+
+def test_option_series_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    state = {"mid": 1.2}
+    def chain(**kwargs):
+        c = _chain()
+        c.quotes = [q.__class__(**{**q.__dict__, "mid": state["mid"]}) if q.right == "call" and q.strike == 100 else q for q in c.quotes]
+        return c
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", chain)
+    app = create_app(start_collector=False, interval=60)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert 'id="pickStrike"' in home.text
+        assert 'id="pickChips"' in home.text
+        assert client.get("/api/option_series?keys=100C").json()["series"]["100C"]["bars"] == []
+        client.post("/api/tick")
+        state["mid"] = 1.5
+        client.post("/api/tick")
+        res = client.get("/api/option_series?keys=100C,100P,nope")
+        assert res.status_code == 200
+        series = res.json()["series"]
+        assert set(series) == {"100C", "100P", "NOPE"}
+        call = series["100C"]
+        assert call["latest"]["price"] == 1.5
+        assert call["bars"][-1]["close"] == 1.5
+        assert call["bars"][-1]["open"] == 1.2
+        assert series["100P"]["latest"]["price"] == 1.0
+        assert series["NOPE"]["bars"] == [] and series["NOPE"]["latest"] is None
