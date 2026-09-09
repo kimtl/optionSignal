@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
-import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -287,8 +285,8 @@ class TastyFeed:
         async with DXLinkStreamer(session) as streamer:
             await streamer.subscribe(Quote, symbols)
             await streamer.subscribe(Greeks, [c.streamer_symbol for c in self.contracts])
-            # Trade carries day_volume for the options and the live price for the future.
-            await streamer.subscribe(Trade, symbols)
+            if self.underlying_symbol:
+                await streamer.subscribe(Trade, [self.underlying_symbol])
             self.phase = "live"
             self.streaming = True
             self.error = None
@@ -337,26 +335,17 @@ class TastyFeed:
             return
         live = self.quotes.setdefault(symbol, StreamQuote())
         live.iv = _num(getattr(event, "volatility", None))
-        delta = _num(getattr(event, "delta", None))
-        if delta is not None and math.isfinite(delta):
-            live.delta = delta
         last = _num(getattr(event, "price", None))
         if last:
             live.last = last
 
     def _apply_trade(self, event) -> None:
         symbol = getattr(event, "event_symbol", None) or getattr(event, "eventSymbol", None)
-        if not symbol:
-            return
         price = _num(getattr(event, "price", None))
-        live = self.quotes.setdefault(symbol, StreamQuote())
-        if price:
-            live.last = price
-        volume = _num(getattr(event, "day_volume", None) or getattr(event, "dayVolume", None))
-        if volume is not None and volume >= 0:
-            live.day_volume = int(volume)
         if symbol == self.underlying_symbol and price:
             self._spot = price
+            live = self.quotes.setdefault(symbol, StreamQuote())
+            live.last = price
 
     async def _load_instruments(self, session) -> None:
         from tastytrade.instruments import Future, get_future_option_chain, get_option_chain
@@ -403,11 +392,11 @@ class TastyFeed:
                 contracts.append(
                     LiveContract(
                         expiry=expiry_date,
-                        right=_right(getattr(option, "option_type", "C"), f"{streamer} {occ}"),
+                        right=_right(getattr(option, "option_type", "C")),
                         strike=strike,
                         streamer_symbol=str(streamer),
                         open_interest=oi,
-                        occ_symbol=occ,
+                        occ_symbol=str(getattr(option, "symbol", "") or ""),
                     )
                 )
         if not contracts:
@@ -459,12 +448,6 @@ class TastyFeed:
                     live.bid_size = _num(getattr(row, "bid_size", None)) or 0.0
                     live.ask_size = _num(getattr(row, "ask_size", None)) or 0.0
                     live.iv = sane_iv(_num(getattr(row, "implied_volatility", None)))
-                    volume = _num(getattr(row, "volume", None))
-                    if volume is not None and volume > 0:
-                        live.day_volume = int(volume)
-                    oi = _num(getattr(row, "open_interest", None))
-                    if oi is not None and oi > 0:
-                        contract.open_interest = int(oi)
         except Exception as exc:  # noqa: BLE001
             log.warning("REST quotes failed: %s", exc)
 

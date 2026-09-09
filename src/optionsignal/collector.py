@@ -9,26 +9,8 @@ from typing import Any, Callable
 
 from .fetch import DEFAULT_SYMBOL, fetch_chain
 from .settings import default_interval, public_url, tasty_configured
-from .signal import (
-    DEFAULT_BAND,
-    DEFAULT_HEADLINE_DTE,
-    build_report,
-    chain_table,
-    front_expiry_quotes,
-    with_deltas,
-    yahoo_session_status,
-)
-from .store import (
-    BAR_HISTORY_LIMIT,
-    RAW_HISTORY_LIMIT,
-    aggregate_bars,
-    compact_point,
-    load_history,
-    load_option_series,
-    price_bars,
-    save_option_ticks,
-    save_snapshot,
-)
+from .signal import DEFAULT_BAND, DEFAULT_HEADLINE_DTE, build_report, with_deltas, yahoo_session_status
+from .store import compact_point, load_history, save_snapshot
 from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
 
 log = logging.getLogger("optionsignal")
@@ -168,9 +150,7 @@ class LiveHub:
     def collect_once(self) -> dict:
         history = load_history(self.symbol.lstrip("/"), limit=240)
         chain = self._load_chain()
-        report = build_report(
-            chain, max_dte=self.max_dte, moneyness_band=self.band, otm_points=self.otm_points
-        )
+        report = build_report(chain, max_dte=self.max_dte, moneyness_band=self.band)
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
         _, front = front_expiry_quotes(chain, self.max_dte)

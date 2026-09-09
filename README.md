@@ -88,6 +88,20 @@ Railway 로그의 `POST /api/tick 502 Bad Gateway` 는 게이트웨이가 죽은
 
 샌드박스(`TASTYTRADE_IS_TEST=true`)는 실전 호가가 아닙니다.
 
+## 스캘핑에서 볼 숫자
+
+Railway 로그의 `POST /api/tick 502 Bad Gateway` 는 게이트웨이가 죽은 게 아니라 **시세 조회가 실패한 것**입니다. 「지금 찍기」는 선택입니다. 서버가 이미 `OPTIONSIGNAL_INTERVAL`마다 찍습니다.
+
+화면 위 요약 칸과 `/health`의 `error`에 이유가 뜹니다.
+
+| 상황 | HTTP | 할 일 |
+| --- | --- | --- |
+| `/NQ`인데 tasty 키가 없음 | 400 | Variables에 `TASTYTRADE_CLIENT_SECRET` + `TASTYTRADE_REFRESH_TOKEN` 을 넣거나 심볼을 QQQ |
+| tasty DXLink 연결 중 | 503 | 몇 초 기다리면 보드가 자동으로 찍힘 |
+| 키/권한/0DTE 없음, Yahoo 차단 | 502 | `TASTYTRADE_IS_TEST=false` 인지, NQ 선물옵션 실시간 권한이 있는지, 오늘 만기가 있는지 확인 |
+
+샌드박스(`TASTYTRADE_IS_TEST=true`)는 실전 호가가 아닙니다.
+
 ## 보드 탭
 
 - **NQ 선물 봉차트**: 서버가 찍는 시세(기본 5초)를 1분봉/5분봉으로 묶어 초록/빨강 캔들로 그립니다. 30분~12시간까지 버튼·슬라이더·휠로 확대/축소, X축은 HH:MM, 마지막 가격은 노란 점선.
