@@ -20,6 +20,7 @@ class OptionQuote:
     open_interest: int
     iv: float | None
     percent_change: float | None
+    delta: float | None = None
 
 
 @dataclass
@@ -82,6 +83,9 @@ class SignalReport:
     summary_ko: str
     summary_en: str
     slices: list[ExpirySlice] = field(default_factory=list)
+    otm_points: float | None = None
+    headline_call_strikes: list[float] | None = None
+    headline_put_strikes: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

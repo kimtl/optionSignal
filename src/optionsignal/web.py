@@ -13,9 +13,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .collector import DEFAULT_INTERVAL, LiveHub
 from .fetch import DEFAULT_SYMBOL
-from .settings import default_interval, default_symbol
+from .settings import default_interval, default_otm_points, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
-from .store import compact_point, load_history
+from .store import BAR_HISTORY_LIMIT, RAW_HISTORY_LIMIT, aggregate_bars, compact_point, load_history
 
 log = logging.getLogger("optionsignal")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -32,12 +32,14 @@ def create_app(
     interval: int | None = None,
     start_collector: bool = True,
     band: float = 0.08,
+    otm_points: float | None = None,
 ) -> FastAPI:
     hub = LiveHub(
         symbol=symbol or default_symbol(),
         max_dte=max_dte,
         band=band,
         interval=interval if interval is not None else default_interval(),
+        otm_points=otm_points if otm_points is not None else default_otm_points(),
     )
 
     @asynccontextmanager
@@ -101,16 +103,33 @@ def create_app(
             )
         return hub.latest
 
+    @app.get("/api/chain")
+    def api_chain():
+        return _hub().chain_payload()
+
+    @app.get("/api/option_series")
+    def api_option_series(
+        keys: str = Query(default="", description="comma-separated, e.g. 24700C,24650P"),
+        tf: int = Query(default=1, ge=1, le=60),
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+    ):
+        wanted = [k.strip().upper() for k in keys.split(",") if k.strip()]
+        return _hub().option_series(wanted, tf=tf, limit=limit)
+
     @app.get("/api/minutes")
-    def api_minutes(limit: int = Query(default=240, ge=10, le=2000)):
+    def api_minutes(
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+        tf: int = Query(default=1, ge=1, le=60),
+    ):
         hub = _hub()
-        points = [compact_point(item) for item in load_history(hub.symbol, limit=limit)]
-        return {"symbol": hub.symbol, "points": points}
+        raw = load_history(hub.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
+        bars = aggregate_bars(raw, minutes=tf)
+        return {"symbol": hub.symbol, "tf": tf, "points": [compact_point(item) for item in bars[-limit:]]}
 
     @app.get("/api/history")
-    def api_history(limit: int = Query(default=240, ge=1, le=2000)):
+    def api_history(limit: int = Query(default=BAR_HISTORY_LIMIT, ge=1, le=RAW_HISTORY_LIMIT)):
         hub = _hub()
-        return JSONResponse(load_history(hub.symbol, limit=limit))
+        return JSONResponse(load_history(hub.symbol.lstrip("/"), limit=limit))
 
     @app.get("/api/status")
     def api_status():
@@ -121,12 +140,16 @@ def create_app(
         symbol: str | None = Query(default=None),
         max_dte: int | None = Query(default=None, ge=0, le=7),
         interval: int | None = Query(default=None, ge=1, le=300),
+        otm_points: float | None = Query(default=None, ge=0, le=5000),
     ):
         hub = _hub()
         if symbol:
             hub.symbol = symbol.upper()
         if max_dte is not None:
             hub.max_dte = max_dte
+        if otm_points is not None:
+            # 0 means "back to the percent band".
+            hub.otm_points = otm_points if otm_points > 0 else None
         if interval is not None:
             hub.interval = interval
         try:

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import SignalReport
 from .settings import db_path
 
 DEFAULT_DB = Path("data/optionsignal.db")
+CHART_HOURS = 12
+RAW_HISTORY_LIMIT = CHART_HOURS * 720 + 240  # 12h of 5s ticks, plus a little
+BAR_HISTORY_LIMIT = CHART_HOURS * 60  # 1-minute bars
 
 
 def _resolve_db(path: Path | None = None) -> Path:
@@ -23,7 +26,7 @@ def _resolve_db(path: Path | None = None) -> Path:
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     path = _resolve_db(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -56,7 +59,112 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_ts ON ticks(symbol, ts)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS option_ticks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            key TEXT NOT NULL,
+            expiry TEXT,
+            mid REAL,
+            bid REAL,
+            ask REAL,
+            last REAL,
+            volume INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_option_ticks_symbol_key_ts ON option_ticks(symbol, key, ts)"
+    )
     return conn
+
+
+def option_key(strike: float, right: str) -> str:
+    """'24700C' / '24700P' / '480.5P' — stable id for one contract within the 0DTE chain."""
+    text = f"{float(strike):g}"
+    return f"{text}{'C' if str(right).lower().startswith('c') else 'P'}"
+
+
+def save_option_ticks(symbol: str, quotes, path: Path | None = None, now: datetime | None = None) -> int:
+    """Store one price row per contract so any option can be charted after the fact."""
+    now = now or datetime.now(timezone.utc)
+    ts = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    rows = []
+    for q in quotes:
+        mid = getattr(q, "mid", None)
+        if mid is None or mid <= 0:
+            continue
+        rows.append((
+            ts, symbol, option_key(q.strike, q.right), q.expiry.isoformat(),
+            float(mid), getattr(q, "bid", None), getattr(q, "ask", None), getattr(q, "last", None),
+            int(getattr(q, "volume", 0) or 0),
+        ))
+    if not rows:
+        return 0
+    with _connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO option_ticks (ts, symbol, key, expiry, mid, bid, ask, last, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        cutoff = (now - timedelta(hours=CHART_HOURS + 1)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM option_ticks WHERE ts < ?", (cutoff,))
+        conn.commit()
+    return len(rows)
+
+
+def load_option_series(symbol: str, key: str, limit: int = RAW_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, mid, bid, ask, last, volume FROM option_ticks
+            WHERE symbol = ? AND key = ?
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (symbol, key, limit),
+        ).fetchall()
+    out = []
+    for ts, mid, bid, ask, last, volume in reversed(rows):
+        out.append({"asof": ts, "price": mid, "bid": bid, "ask": ask, "last": last, "volume": volume or 0})
+    return out
+
+
+def price_bars(points: list[dict], minutes: int = 1, value: str = "price") -> list[dict]:
+    """Generic OHLC buckets for a plain price series (option mids)."""
+    minutes = max(1, int(minutes))
+    buckets: dict[str, dict] = {}
+    order: list[str] = []
+    for point in points:
+        ts = _parse_ts(point.get("asof") or point.get("stored_at"))
+        px = point.get(value)
+        if px is None:
+            px = point.get("close")
+        if ts is None or px is None:
+            continue
+        px = float(px)
+        high = float(point["high"]) if point.get("high") is not None else px
+        low = float(point["low"]) if point.get("low") is not None else px
+        open_ = float(point["open"]) if point.get("open") is not None else px
+        key_dt = floor_bar_time(ts, minutes)
+        key = key_dt.isoformat()
+        vol = int(point.get("volume") or 0)
+        bar = buckets.get(key)
+        if bar is None:
+            buckets[key] = {
+                "asof": key_dt.isoformat(timespec="seconds"),
+                "open": open_, "high": high, "low": low, "close": px, "volume": vol,
+            }
+            order.append(key)
+            continue
+        bar["high"] = max(bar["high"], high)
+        bar["low"] = min(bar["low"], low)
+        bar["close"] = px
+        bar["volume"] = max(bar["volume"], vol)
+    return [buckets[k] for k in order]
 
 
 def minute_key(ts: datetime | None = None) -> str:
@@ -81,6 +189,9 @@ def save_snapshot(report: SignalReport | dict, path: Path | None = None) -> int:
             "INSERT INTO ticks (ts, minute, symbol, payload) VALUES (?, ?, ?, ?)",
             (ts, minute_key(now), symbol, payload),
         )
+        cutoff = (now - timedelta(hours=CHART_HOURS + 1)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM ticks WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM snapshots WHERE ts < ?", (cutoff,))
         conn.commit()
         return int(cursor.lastrowid)
 
@@ -94,7 +205,7 @@ def _rows_to_history(rows: list[tuple[str, str]]) -> list[dict]:
     return history
 
 
-def load_history(symbol: str, limit: int = 240, path: Path | None = None) -> list[dict]:
+def load_history(symbol: str, limit: int = RAW_HISTORY_LIMIT, path: Path | None = None) -> list[dict]:
     symbol = symbol.upper().lstrip("^")
     with _connect(path) as conn:
         tick_count = conn.execute("SELECT COUNT(*) FROM ticks WHERE symbol = ?", (symbol,)).fetchone()[0]
@@ -139,4 +250,120 @@ def compact_point(item: dict) -> dict:
         "flow_1m": item.get("flow_1m"),
         "bias": item.get("bias"),
         "score": item.get("score"),
+        "open": item.get("open"),
+        "high": item.get("high"),
+        "low": item.get("low"),
+        "close": item.get("close"),
+        "nq_open": item.get("nq_open"),
+        "nq_high": item.get("nq_high"),
+        "nq_low": item.get("nq_low"),
+        "nq_close": item.get("nq_close"),
     }
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def floor_bar_time(ts: datetime, minutes: int) -> datetime:
+    minutes = max(1, int(minutes))
+    ts = ts.replace(second=0, microsecond=0)
+    extra = ts.minute % minutes
+    if extra:
+        ts = ts - timedelta(minutes=extra)
+    return ts
+
+
+def _futures_price(point: dict) -> float | None:
+    for key in ("nq_close", "futures_price", "spot"):
+        value = point.get(key)
+        if value is not None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number == number and number > 0:
+                return number
+    return None
+
+
+def aggregate_bars(points: list[dict], minutes: int = 1) -> list[dict]:
+    """Bucket ticks (or smaller bars) into 1m/5m CPPI candles, with NQ OHLC alongside."""
+    minutes = max(1, int(minutes))
+    buckets: dict[str, dict] = {}
+    order: list[str] = []
+    for point in points:
+        ts = _parse_ts(point.get("asof") or point.get("stored_at"))
+        close = point.get("close")
+        if close is None:
+            close = point.get("headline_cppi")
+        if ts is None or close is None:
+            continue
+        close = float(close)
+        high = float(point.get("high") if point.get("high") is not None else close)
+        low = float(point.get("low") if point.get("low") is not None else close)
+        open_ = float(point.get("open") if point.get("open") is not None else close)
+        nq_close = _futures_price(point)
+        nq_high = float(point["nq_high"]) if point.get("nq_high") is not None else nq_close
+        nq_low = float(point["nq_low"]) if point.get("nq_low") is not None else nq_close
+        nq_open = float(point["nq_open"]) if point.get("nq_open") is not None else nq_close
+        key_dt = floor_bar_time(ts, minutes)
+        key = key_dt.isoformat()
+        call_prem = float(point.get("headline_call_premium") or 0)
+        put_prem = float(point.get("headline_put_premium") or 0)
+        if key not in buckets:
+            buckets[key] = {
+                "asof": key_dt.isoformat(timespec="seconds"),
+                "stored_at": point.get("stored_at"),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "headline_cppi": close,
+                "headline_call_premium": call_prem,
+                "headline_put_premium": put_prem,
+                "nq_open": nq_open,
+                "nq_high": nq_high,
+                "nq_low": nq_low,
+                "nq_close": nq_close,
+                "futures_price": nq_close,
+                "_first_call": call_prem,
+                "_first_put": put_prem,
+            }
+            order.append(key)
+            continue
+        bar = buckets[key]
+        bar["high"] = max(bar["high"], high)
+        bar["low"] = min(bar["low"], low)
+        bar["close"] = close
+        bar["headline_cppi"] = close
+        bar["headline_call_premium"] = call_prem
+        bar["headline_put_premium"] = put_prem
+        bar["stored_at"] = point.get("stored_at") or bar.get("stored_at")
+        if nq_close is not None:
+            if bar["nq_open"] is None:
+                bar["nq_open"] = nq_open
+            bar["nq_high"] = nq_high if bar["nq_high"] is None else max(bar["nq_high"], nq_high)
+            bar["nq_low"] = nq_low if bar["nq_low"] is None else min(bar["nq_low"], nq_low)
+            bar["nq_close"] = nq_close
+            bar["futures_price"] = nq_close
+    out: list[dict] = []
+    prev_close = None
+    for key in order:
+        bar = buckets[key]
+        bar["call_premium_delta_1m"] = bar["headline_call_premium"] - bar["_first_call"]
+        bar["put_premium_delta_1m"] = bar["headline_put_premium"] - bar["_first_put"]
+        bar["cppi_delta_1m"] = None if prev_close is None else bar["close"] - prev_close
+        prev_close = bar["close"]
+        bar.pop("_first_call", None)
+        bar.pop("_first_put", None)
+        out.append(bar)
+    return out

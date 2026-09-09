@@ -41,14 +41,17 @@ class LiveHub:
         interval: int | None = None,
         fetch_fn: FetchFn | None = None,
         tasty_feed: TastyFeed | None = None,
+        otm_points: float | None = None,
     ) -> None:
         self.symbol = symbol
         self.max_dte = max_dte
         self.band = band
+        self.otm_points = otm_points if otm_points and otm_points > 0 else None
         self.interval = max(1, int(interval if interval is not None else default_interval()))
         self.fetch_fn = fetch_fn or fetch_chain
         self.tasty_feed = tasty_feed
         self.latest: dict | None = None
+        self.latest_chain = None
         self.error: str | None = None
         self.last_tick_at: datetime | None = None
         self.subscribers: set[asyncio.Queue] = set()
@@ -91,6 +94,8 @@ class LiveHub:
         return {
             "symbol": self.symbol,
             "max_dte": self.max_dte,
+            "otm_points": self.otm_points,
+            "band": self.band,
             "interval": self.interval,
             "viewers": len(self.subscribers),
             "last_tick_at": self.last_tick_at.isoformat(timespec="seconds") if self.last_tick_at else None,
@@ -108,12 +113,39 @@ class LiveHub:
         }
 
     def live_payload(self) -> dict:
-        points = [compact_point(item) for item in load_history(self.symbol.lstrip("/"), limit=240)]
+        raw = load_history(self.symbol.lstrip("/"), limit=RAW_HISTORY_LIMIT)
+        bars = aggregate_bars(raw, minutes=1)
+        points = [compact_point(item) for item in bars[-BAR_HISTORY_LIMIT:]]
         return {
             "tick": self.latest,
             "points": points,
             "status": self.status(),
         }
+
+    def option_series(self, keys: list[str], tf: int = 1, limit: int = BAR_HISTORY_LIMIT) -> dict:
+        """OHLC bars of the mid price for each requested contract key (e.g. 24700C)."""
+        symbol = self.symbol.lstrip("/").lstrip("^")
+        series = {}
+        for key in keys[:8]:
+            raw = load_option_series(symbol, key, limit=RAW_HISTORY_LIMIT)
+            bars = price_bars(raw, minutes=tf)
+            latest = raw[-1] if raw else None
+            series[key] = {"bars": bars[-limit:], "latest": latest}
+        return {"symbol": self.symbol, "tf": tf, "series": series}
+
+    def chain_payload(self) -> dict:
+        """Raw 0DTE call/put quotes for the chain tab. Uses the live cache when streaming."""
+        chain = self.latest_chain
+        feed = self.tasty_feed
+        if feed is not None and feed.contracts:
+            try:
+                chain = feed.snapshot()
+            except Exception:  # noqa: BLE001
+                pass
+        if chain is None:
+            return {"symbol": self.symbol, "rows": [], "expiry": None, "spot": None, "asof": None,
+                    "error": self.error or "아직 체인을 받지 못했습니다."}
+        return chain_table(chain, max_dte=self.max_dte)
 
     def collect_once(self) -> dict:
         history = load_history(self.symbol.lstrip("/"), limit=240)
@@ -121,7 +153,13 @@ class LiveHub:
         report = build_report(chain, max_dte=self.max_dte, moneyness_band=self.band)
         payload = with_deltas(report.to_dict(), history)
         save_snapshot(payload)
+        _, front = front_expiry_quotes(chain, self.max_dte)
+        try:
+            save_option_ticks(chain.symbol, front)
+        except Exception:  # noqa: BLE001
+            log.exception("option tick save failed")
         self.latest = payload
+        self.latest_chain = chain
         self.error = None
         self.last_tick_at = datetime.now(timezone.utc)
         return payload

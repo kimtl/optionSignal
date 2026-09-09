@@ -49,9 +49,22 @@ def _num(value) -> float | None:
     return number
 
 
-def _right(option_type: object) -> str:
-    text = str(option_type).upper()
-    return "put" if "PUT" in text or text.endswith(".P") or text.endswith(": P") else "call"
+def _right(option_type: object, streamer_symbol: str = "") -> str:
+    """tastytrade uses OptionType.PUT = "P", not the word PUT."""
+    raw = getattr(option_type, "value", option_type)
+    text = str(raw or "").upper().strip()
+    name = str(getattr(option_type, "name", "") or "").upper().strip()
+    if text in {"P", "PUT"} or name in {"P", "PUT"} or text.endswith(".P"):
+        return "put"
+    if "PUT" in f"{name} {text}":
+        return "put"
+    if text in {"C", "CALL"} or name in {"C", "CALL"}:
+        return "call"
+    stream = (streamer_symbol or "").upper().replace(" ", "")
+    match = re.search(r"([CP])\d+(?:\.\d+)?$", stream)
+    if match:
+        return "put" if match.group(1) == "P" else "call"
+    return "call"
 
 
 @dataclass
@@ -97,6 +110,7 @@ class StreamQuote:
     ask_size: float = 0.0
     iv: float | None = None
     day_volume: int = 0
+    delta: float | None = None
 
 
 def snapshot_from_cache(
@@ -131,6 +145,7 @@ def snapshot_from_cache(
                 open_interest=contract.open_interest,
                 iv=sane_iv(live.iv),
                 percent_change=None,
+                delta=live.delta,
             )
         )
     return OptionChain(
@@ -373,6 +388,7 @@ class TastyFeed:
                 if spot and not (spot * (1 - self.band) <= strike <= spot * (1 + self.band)):
                     continue
                 oi = int(_num(getattr(option, "open_interest", 0)) or 0)
+                occ = str(getattr(option, "symbol", "") or "")
                 contracts.append(
                     LiveContract(
                         expiry=expiry_date,
