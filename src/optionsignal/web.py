@@ -103,6 +103,16 @@ def create_app(
             )
         return hub.latest
 
+    @app.get("/api/premium_ratio")
+    def api_premium_ratio(
+        calls: str = Query(default=""),
+        puts: str = Query(default=""),
+        tf: int = Query(default=1, ge=1, le=60),
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+    ):
+        split = lambda text: [k.strip().upper() for k in text.split(",") if k.strip()]  # noqa: E731
+        return JSONResponse(_hub().premium_ratio_series(split(calls), split(puts), tf=tf, limit=limit))
+
     @app.get("/api/chain")
     def api_chain():
         return _hub().chain_payload()
@@ -151,6 +161,11 @@ def create_app(
             hub.otm_points = otm_points if otm_points > 0 else None
         if interval is not None:
             hub.interval = interval
+        if await hub.ensure_feed():
+            # New symbol: the feed is loading its chain; the loop ticks as soon as quotes arrive.
+            hub.error = f"{hub.symbol} 체인을 불러오는 중입니다."
+            await hub.broadcast({"event": "error", "status": hub.status()})
+            return hub.live_payload()
         try:
             await asyncio.to_thread(hub.collect_once)
             await hub.broadcast(hub.live_payload() | {"event": "tick"})

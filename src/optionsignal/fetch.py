@@ -159,8 +159,10 @@ def fetch_price_history(symbol: str = FUTURES_SYMBOL, hours: int = 12) -> list[d
     Futures roots (/NQ, NQ) map to NQ=F. Returns [{asof, open, high, low, close, volume}].
     """
     yahoo = symbol.upper()
-    if yahoo.lstrip("/") in {"NQ", "MNQ"}:
-        yahoo = FUTURES_SYMBOL
+    if yahoo.startswith("/") or yahoo.lstrip("/").split(":")[0] in {"NQ", "MNQ", "ES", "MES", "YM", "MYM", "RTY"}:
+        from .tasty import yahoo_futures_symbol
+
+        yahoo = yahoo_futures_symbol(yahoo)
     # Yahoo's "1d"/"2d" windows start at midnight New York, so an overnight futures
     # session is cut off. "5d" returns the full minute history (1m allows up to 7d).
     frame = yf.Ticker(yahoo).history(period="5d", interval="1m", prepost=True, auto_adjust=False)

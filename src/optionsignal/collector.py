@@ -7,7 +7,7 @@ import socket
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .fetch import DEFAULT_SYMBOL, FUTURES_SYMBOL, fetch_chain, fetch_price_history
+from .fetch import DEFAULT_SYMBOL, fetch_chain, fetch_price_history
 from .metrics import session_date
 from .settings import default_interval, public_url, tasty_configured
 from .signal import (
@@ -22,20 +22,31 @@ from .signal import (
 from .store import (
     BAR_HISTORY_LIMIT,
     CHART_HOURS,
+    FUTURES_KEY,
     RAW_HISTORY_LIMIT,
     aggregate_bars,
     backfill_option_bars,
     compact_point,
     futures_history_points,
     load_history,
+    load_option_rows,
     load_option_series,
     option_key,
+    premium_ratio_points,
     price_bars,
     save_bars,
     save_option_ticks,
     save_snapshot,
 )
-from .tasty import FeedConfigError, FeedNotReady, TastyFeed, is_futures_root
+from .tasty import (
+    FUTURES_INFO,
+    FeedConfigError,
+    FeedNotReady,
+    TastyFeed,
+    is_futures_root,
+    product_code,
+    yahoo_futures_symbol,
+)
 
 log = logging.getLogger("optionsignal")
 
@@ -83,6 +94,8 @@ class LiveHub:
         self.last_tick_at: datetime | None = None
         self.subscribers: set[asyncio.Queue] = set()
         self._running = False
+        self._tasty_task: asyncio.Task | None = None
+        self._backfill_task: asyncio.Task | None = None
         self.port = 8000
 
     def source_name(self) -> str:
@@ -137,6 +150,7 @@ class LiveHub:
             "backfill": self.backfill,
             "expiry": self.front_expiry.isoformat() if self.front_expiry else None,
             "session_date": session_date().isoformat(),
+            "futures": self.futures_info(),
             "share_hint": url or lan_ip(),
             "public_url": url,
             "port": self.port,
@@ -185,7 +199,7 @@ class LiveHub:
             summary["expiry"] = self._backfill_expiry.isoformat() if self._backfill_expiry else None
             nq = candles.get(feed.underlying_symbol) or []
             if nq:
-                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, "NQ", nq)
+                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, FUTURES_KEY, nq)
             for contract in feed.contracts:
                 bars = candles.get(contract.streamer_symbol)
                 if not bars:
@@ -196,13 +210,13 @@ class LiveHub:
         else:
             summary["source"] = "yahoo"
             try:
-                # The board's candles are always the NQ future, whatever the option symbol.
-                bars = await asyncio.to_thread(fetch_price_history, FUTURES_SYMBOL, hours)
+                # The board's candles are the future behind the symbol (/ES -> ES=F, QQQ -> NQ=F).
+                bars = await asyncio.to_thread(fetch_price_history, yahoo_futures_symbol(self.symbol), hours)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Yahoo history backfill failed: %s", exc)
                 bars = []
             if bars:
-                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, "NQ", bars)
+                summary["nq_bars"] = await asyncio.to_thread(save_bars, symbol, FUTURES_KEY, bars)
         self.backfill = summary
         log.info("history backfill: %s", summary)
         if summary["nq_bars"] or summary["options"]:
@@ -221,6 +235,24 @@ class LiveHub:
             latest = raw[-1] if raw else None
             series[key] = {"bars": bars[-limit:], "latest": latest}
         return {"symbol": self.symbol, "tf": tf, "expiry": expiry, "series": series}
+
+    def premium_ratio_series(self, calls: list[str], puts: list[str], tf: int = 1, limit: int = BAR_HISTORY_LIMIT) -> dict:
+        """Call ÷ put Σ(mid × volume) × 100 for the chosen contracts, as OHLC bars."""
+        symbol = self.symbol.lstrip("/").lstrip("^")
+        expiry = self.front_expiry.isoformat() if self.front_expiry else None
+        calls = calls[:8]
+        puts = puts[:8]
+        rows = load_option_rows(symbol, calls + puts, expiry=expiry)
+        pts = premium_ratio_points(rows, calls, puts)
+        bars = price_bars(pts, minutes=tf, value="ratio")
+        latest = pts[-1] if pts else None
+        return {"symbol": self.symbol, "tf": tf, "expiry": expiry, "calls": calls, "puts": puts,
+                "bars": bars[-limit:], "latest": latest}
+
+    def futures_info(self) -> dict:
+        code = product_code(self.symbol) if is_futures_root(self.symbol) else "NQ"
+        info = FUTURES_INFO.get(code, FUTURES_INFO["NQ"])
+        return {"code": code, "name_ko": info["name_ko"], "yahoo": info["yahoo"], "multiplier": info["multiplier"]}
 
     def chain_payload(self) -> dict:
         """Raw 0DTE call/put quotes for the chain tab. Uses the live cache when streaming."""
@@ -292,22 +324,59 @@ class LiveHub:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self.subscribers.discard(queue)
 
+    async def _stop_task(self, task: asyncio.Task | None) -> None:
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+    async def ensure_feed(self) -> bool:
+        """Start, or swap, the tastytrade feed so it streams the board's current symbol.
+
+        Returns True when the feed was (re)started, i.e. quotes are not ready yet.
+        """
+        if not tasty_configured():
+            return False
+        want = product_code(self.symbol) if is_futures_root(self.symbol) else None
+        feed = self.tasty_feed
+        have = product_code(feed.symbol) if feed is not None else None
+        if want == have:
+            return False
+        await self._stop_task(self._tasty_task)
+        await self._stop_task(self._backfill_task)
+        if feed is not None:
+            feed.stop()
+        self.tasty_feed = None
+        self.latest = None
+        self.latest_chain = None
+        self.front_expiry = None
+        self.backfill = None
+        self._backfill_expiry = None
+        self.error = None
+        if want:
+            self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=self.band)
+            self._tasty_task = asyncio.create_task(self.tasty_feed.run(), name="tasty-dxlink")
+            log.info("feed switched to %s", self.symbol)
+        self._backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
+        return True
+
     async def run(self) -> None:
         self._running = True
-        tasty_task = None
-        if tasty_configured() and self.tasty_feed is None:
-            self.tasty_feed = TastyFeed(symbol=self.symbol, max_dte=self.max_dte, band=self.band)
-        if self.tasty_feed is not None:
-            tasty_task = asyncio.create_task(self.tasty_feed.run(), name="tasty-dxlink")
-        backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
+        await self.ensure_feed()
+        if self._backfill_task is None:
+            self._backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
         try:
             while self._running:
                 try:
+                    await self.ensure_feed()
                     payload = await asyncio.to_thread(self.collect_once)
                     await self.broadcast(self.live_payload() | {"event": "tick"})
                     _ = payload
-                    if self._needs_backfill(backfill_task):
-                        backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
+                    if self._needs_backfill(self._backfill_task):
+                        self._backfill_task = asyncio.create_task(self.backfill_history(), name="history-backfill")
                 except FeedNotReady as exc:
                     self.error = str(exc)
                     log.info("tick waiting: %s", exc)
@@ -324,23 +393,13 @@ class LiveHub:
         finally:
             if self.tasty_feed is not None:
                 self.tasty_feed.stop()
-            if not backfill_task.done():
-                backfill_task.cancel()
-                try:
-                    await backfill_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            if tasty_task:
-                tasty_task.cancel()
-                try:
-                    await tasty_task
-                except asyncio.CancelledError:
-                    pass
+            await self._stop_task(self._backfill_task)
+            await self._stop_task(self._tasty_task)
 
     def _needs_backfill(self, task) -> bool:
         """After the 4pm roll the feed streams a new expiry whose history we have not pulled yet."""
         feed = self.tasty_feed
-        if feed is None or not task.done():
+        if feed is None or task is None or not task.done():
             return False
         expiry = getattr(feed, "expiry", None)
         return bool(expiry) and expiry != self._backfill_expiry

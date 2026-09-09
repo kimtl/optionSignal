@@ -93,6 +93,9 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+FUTURES_KEY = "FUT"  # key under which the underlying future's backfilled candles are stored
+
+
 def option_key(strike: float, right: str) -> str:
     """'24700C' / '24700P' / '480.5P' — stable id for one contract within the 0DTE chain."""
     text = f"{float(strike):g}"
@@ -468,7 +471,7 @@ def futures_history_points(symbol: str, path: Path | None = None) -> list[dict]:
             "futures_price": bar["close"],
             "backfill": True,
         }
-        for bar in load_bars(symbol, "NQ", path=path)
+        for bar in load_bars(symbol, FUTURES_KEY, path=path)
     ]
 
 
@@ -504,3 +507,73 @@ def backfill_option_bars(
             )
         conn.commit()
     return len(rows)
+
+
+def load_option_rows(
+    symbol: str,
+    keys: list[str],
+    expiry: str | None = None,
+    limit: int = RAW_HISTORY_LIMIT,
+    live_only: bool = True,
+    path: Path | None = None,
+) -> dict[str, list[dict]]:
+    """{key: [{asof, mid, volume}, ...]} for several contracts at once (oldest first).
+
+    live_only skips backfilled candle rows (bid IS NULL), whose volume is per-minute rather
+    than the day total the live quotes carry, so premium sums stay comparable.
+    """
+    symbol = symbol.upper().lstrip("^").lstrip("/")
+    keys = [k for k in keys if k]
+    if not keys:
+        return {}
+    where = f"symbol = ? AND key IN ({','.join('?' * len(keys))})"
+    params: list = [symbol, *keys]
+    if expiry:
+        where += " AND (expiry = ? OR expiry IS NULL)"
+        params.append(expiry)
+    if live_only:
+        where += " AND bid IS NOT NULL"
+    params.append(limit * len(keys))
+    with _connect(path) as conn:
+        rows = conn.execute(
+            f"SELECT ts, key, mid, volume FROM option_ticks WHERE {where} ORDER BY ts DESC LIMIT ?",
+            params,
+        ).fetchall()
+    out: dict[str, list[dict]] = {k: [] for k in keys}
+    for ts, key, mid, volume in reversed(rows):
+        out.setdefault(key, []).append({"asof": ts, "mid": mid, "volume": volume or 0})
+    return out
+
+
+def premium_ratio_points(rows_by_key: dict[str, list[dict]], calls: list[str], puts: list[str]) -> list[dict]:
+    """Per tick: Σ(mid × volume) over the chosen calls ÷ the same over the puts × 100.
+
+    Ticks are stored with one shared timestamp per collect, so rows are matched on `asof`.
+    A tick needs at least one call and one put row and a positive put sum to produce a point.
+    """
+    calls = [k for k in calls if k in rows_by_key]
+    puts = [k for k in puts if k in rows_by_key]
+    if not calls or not puts:
+        return []
+    by_ts: dict[str, dict] = {}
+    for side, keys in (("call", calls), ("put", puts)):
+        for key in keys:
+            for row in rows_by_key.get(key, []):
+                mid = row.get("mid")
+                if mid is None or mid <= 0:
+                    continue
+                bucket = by_ts.setdefault(row["asof"], {"call": 0.0, "put": 0.0, "call_n": 0, "put_n": 0})
+                bucket[side] += float(mid) * float(row.get("volume") or 0)
+                bucket[f"{side}_n"] += 1
+    out = []
+    for ts in sorted(by_ts):
+        b = by_ts[ts]
+        if not b["call_n"] or not b["put_n"] or b["put"] <= 0:
+            continue
+        out.append({
+            "asof": ts,
+            "ratio": b["call"] / b["put"] * 100.0,
+            "call_premium": b["call"],
+            "put_premium": b["put"],
+        })
+    return out
