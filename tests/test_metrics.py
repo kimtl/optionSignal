@@ -282,7 +282,12 @@ def test_build_report_computes_every_cppi_variant():
     report = build_report(chain)
     assert report.moneyness_band == 0.03
     v = report.cppi_variants
-    assert set(v) == {"all", "p100", "p150", "p200", "p300"}
+    assert set(v) == {"all", "p100", "p150", "p200", "p300", "chain"}
+    # "chain" is the whole chain, ITM and ATM included: every quoted strike on both sides.
+    assert v["chain"]["call_strikes"] == [24000, 25400] and v["chain"]["put_strikes"] == [24000, 25400]
+    assert v["chain"]["call_count"] == 57 and v["chain"]["put_count"] == 57
+    assert v["chain"]["call_window"] == [24000, 25400] and v["chain"]["put_window"] == [24000, 25400]
+    assert v["chain"]["call_premium"] > v["all"]["call_premium"]
     assert v["p100"]["call_strikes"] == [24725, 24800] and v["p100"]["put_strikes"] == [24625, 24675]
     assert v["p300"]["call_strikes"] == [24725, 25000] and v["p300"]["put_strikes"] == [24425, 24675]
     assert v["all"]["band"] is None and v["all"]["points"] is None

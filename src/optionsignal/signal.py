@@ -32,7 +32,7 @@ DEFAULT_BAND = 0.03
 DEFAULT_WING_PCT = 0.03
 # Every CPPI selection the board offers is computed on each tick so each viewer can pick
 # their own without changing anything on the server: (key, moneyness band, points from ATM).
-# ("all", None, None) = every quoted strike of the 0DTE chain, no moneyness filter.
+# ("all", None, None) = every quoted OTM strike of the 0DTE chain, no distance cap.
 CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
     ("all", None, None),
     ("p100", None, 100.0),
@@ -40,6 +40,9 @@ CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
     ("p200", None, 200.0),
     ("p300", None, 300.0),
 )
+# Whole chain including ATM and ITM quotes: not a CPPI selection (ITM premium is mostly
+# intrinsic value), only the board's call/put premium ratio uses it.
+CHAIN_VARIANT = "chain"
 DEFAULT_HEADLINE_DTE = 0
 
 
@@ -97,9 +100,15 @@ def _cppi_variant(
     band: float | None,
     points: float | None,
     rr: float | None,
+    otm_only: bool = True,
 ) -> dict:
     """CPPI and premiums for one selection rule, plus the bias text it implies."""
-    if points is None and band is None:
+    if not otm_only:
+        calls = [q for q in quotes if q.right == "call" and q.mid and q.mid > 0]
+        puts = [q for q in quotes if q.right == "put" and q.mid and q.mid > 0]
+        span = strike_range(quotes)
+        call_window = put_window = list(span) if span else None
+    elif points is None and band is None:
         calls, puts = select_all_otm(quotes, spot)
         span = strike_range(quotes)
         call_window = [spot, span[1]] if span else None
@@ -195,6 +204,7 @@ def build_report(
         key: _cppi_variant(headline_all, chain.spot, band, points, rr)
         for key, band, points in CPPI_VARIANTS
     }
+    variants[CHAIN_VARIANT] = _cppi_variant(headline_all, chain.spot, None, None, rr, otm_only=False)
     ratio = premium_ratio(call_prem, put_prem)
     if ratio == float("inf"):
         ratio = None
