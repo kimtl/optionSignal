@@ -194,8 +194,8 @@ def test_option_series_endpoint(monkeypatch, tmp_path):
     app = create_app(start_collector=False, interval=60)
     with TestClient(app) as client:
         home = client.get("/")
-        assert 'id="pickStrike"' in home.text
-        assert 'id="pickChips"' in home.text
+        assert 'id="premCard"' in home.text
+        assert 'id="ratioChart"' in home.text
         assert client.get("/api/option_series?keys=100C").json()["series"]["100C"]["bars"] == []
         client.post("/api/tick")
         state["mid"] = 1.5
@@ -253,6 +253,61 @@ def test_settings_symbol_switch_without_tasty_keeps_yahoo_flow(monkeypatch, tmp_
         res = client.post("/api/settings?symbol=/ES")
         # /ES without tastytrade keys is a configuration error, not a crash.
         assert res.status_code == 400
-        status = client.get("/api/status").json()
+        status = client.get("/api/status?symbol=/ES").json()
         assert status["symbol"] == "/ES"
         assert status["futures"] == {"code": "ES", "name_ko": "S&P 500 선물", "yahoo": "ES=F", "multiplier": 50}
+        # The default board is untouched: another tab asking for /ES does not re-point this one.
+        assert client.get("/api/status").json()["symbol"] == "QQQ"
+        assert calls == []
+
+
+def test_boards_are_independent_per_symbol(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", lambda **kwargs: _chain())
+    app = create_app(symbol="QQQ", start_collector=False)
+    with TestClient(app) as client:
+        assert client.post("/api/tick").status_code == 200
+        boards = client.get("/api/boards").json()
+        assert boards["default"] == "QQQ"
+        assert [b["symbol"] for b in boards["boards"]] == ["QQQ"]
+        # Asking for /NQ spins up a second board; "NQ" and "/nq" name the same one.
+        nq = client.get("/api/live?symbol=nq").json()
+        assert nq["status"]["symbol"] == "/NQ"
+        assert nq["tick"] is None
+        same = client.get("/api/status?symbol=/NQ").json()
+        assert same["symbol"] == "/NQ"
+        boards = client.get("/api/boards").json()["boards"]
+        assert sorted(b["symbol"] for b in boards) == ["/NQ", "QQQ"]
+        # Per-board settings: max_dte on /NQ leaves QQQ alone.
+        client.post("/api/settings?symbol=/NQ&max_dte=1")
+        assert client.get("/api/status?symbol=/NQ").json()["max_dte"] == 1
+        assert client.get("/api/status").json()["max_dte"] == 0
+        assert client.get("/api/live").json()["tick"]["symbol"] == "QQQ"
+        health = client.get("/health").json()
+        assert {b["symbol"] for b in health["boards"]} == {"/NQ", "QQQ"}
+
+
+def test_lazily_created_board_starts_its_own_collector(monkeypatch, tmp_path):
+    import time
+
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+    monkeypatch.setattr("optionsignal.collector.tasty_configured", lambda: False)
+    monkeypatch.setattr("optionsignal.collector.fetch_chain", lambda **kwargs: _chain())
+    monkeypatch.setattr("optionsignal.collector.fetch_price_history", lambda *a, **k: [])
+    app = create_app(symbol="QQQ", start_collector=True, interval=60)
+    with TestClient(app) as client:
+        hubs = app.state.hubs
+        deadline = time.time() + 5
+        while "QQQ" not in hubs.tasks and time.time() < deadline:
+            time.sleep(0.05)
+        assert "QQQ" in hubs.tasks
+        # A sync request handler (worker thread) creates the SPY board; its loop must start on the server loop.
+        assert client.get("/api/live?symbol=spy").json()["status"]["symbol"] == "SPY"
+        deadline = time.time() + 5
+        while ("SPY" not in hubs.tasks or hubs.get("SPY").latest is None) and time.time() < deadline:
+            time.sleep(0.05)
+        assert "SPY" in hubs.tasks
+        assert hubs.get("SPY").latest is not None
+        assert hubs.get("SPY").latest["symbol"] == "QQQ"  # the fake chain; what matters is that it ticked
+    assert hubs.tasks == {}

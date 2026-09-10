@@ -114,7 +114,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    app.state.hub.port = args.port
+    app.state.hubs.port = args.port
+    for hub in app.state.hubs.hubs.values():
+        hub.port = args.port
     print(f"optionSignal  http://{args.host}:{args.port}")
     if args.host == "0.0.0.0":
         print("Railway면 대시보드에서 Generate Domain 한 뒤 그 URL을 같이 보면 됩니다.")

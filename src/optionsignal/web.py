@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .collector import DEFAULT_INTERVAL, LiveHub
+from .collector import DEFAULT_INTERVAL, HubRegistry, LiveHub
 from .fetch import DEFAULT_SYMBOL
 from .settings import default_interval, default_otm_points, default_symbol
 from .signal import DEFAULT_HEADLINE_DTE
@@ -34,8 +34,9 @@ def create_app(
     band: float = 0.08,
     otm_points: float | None = None,
 ) -> FastAPI:
-    hub = LiveHub(
-        symbol=symbol or default_symbol(),
+    hubs = HubRegistry(
+        symbol or default_symbol(),
+        start_collector=start_collector,
         max_dte=max_dte,
         band=band,
         interval=interval if interval is not None else default_interval(),
@@ -44,26 +45,23 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.hub = hub
-        task = None
-        if start_collector:
-            task = asyncio.create_task(hub.run(), name="optionsignal-collector")
+        app.state.hubs = hubs
+        app.state.hub = hubs.default
+        hubs.start()
         try:
             yield
         finally:
-            hub.stop()
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            await hubs.stop()
 
     app = FastAPI(title="optionSignal", lifespan=lifespan)
-    app.state.hub = hub
+    app.state.hubs = hubs
+    app.state.hub = hubs.default  # the server's default board (CLI/tests); viewers pick their own via ?symbol=
 
-    def _hub() -> LiveHub:
-        return app.state.hub
+    def _hub(symbol: str | None = None) -> LiveHub:
+        """Board for one symbol. Each browser tab passes its own ?symbol=, so tabs never share state."""
+        return app.state.hubs.get(symbol)
+
+    SymbolQ = Query(default=None, description="board symbol, e.g. /NQ, /ES, /YM, QQQ (default: server default)")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -73,11 +71,12 @@ def create_app(
         return files("optionsignal").joinpath("static/index.html").read_text(encoding="utf-8")
 
     @app.get("/health")
-    def health():
-        hub = _hub()
+    def health(symbol: str | None = SymbolQ):
+        hub = _hub(symbol)
         status = hub.status()
         return {
             "ok": True,
+            "symbol": hub.symbol,
             "tick": hub.latest is not None,
             "error": hub.error,
             "source": status["source"],
@@ -85,17 +84,23 @@ def create_app(
             "phase": status.get("phase"),
             "contracts": status.get("contracts"),
             "quoted": status.get("quoted"),
+            "boards": app.state.hubs.overview(),
         }
 
+    @app.get("/api/boards")
+    def api_boards():
+        """Every board this server is running (one per symbol viewers asked for)."""
+        return {"default": app.state.hubs.default_symbol, "boards": app.state.hubs.overview()}
+
     @app.get("/api/live")
-    def api_live():
+    def api_live(symbol: str | None = SymbolQ):
         """Board payload. Always 200 so the UI can show a connecting/error state."""
-        return _hub().live_payload()
+        return _hub(symbol).live_payload()
 
     @app.get("/api/signal")
-    def api_signal():
+    def api_signal(symbol: str | None = SymbolQ):
         """Latest shared tick. Does not fetch Yahoo per viewer."""
-        hub = _hub()
+        hub = _hub(symbol)
         if hub.latest is None:
             raise HTTPException(
                 status_code=503,
@@ -109,51 +114,57 @@ def create_app(
         puts: str = Query(default=""),
         tf: int = Query(default=1, ge=1, le=60),
         limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+        symbol: str | None = SymbolQ,
     ):
         split = lambda text: [k.strip().upper() for k in text.split(",") if k.strip()]  # noqa: E731
-        return JSONResponse(_hub().premium_ratio_series(split(calls), split(puts), tf=tf, limit=limit))
+        return JSONResponse(_hub(symbol).premium_ratio_series(split(calls), split(puts), tf=tf, limit=limit))
 
     @app.get("/api/chain")
-    def api_chain():
-        return _hub().chain_payload()
+    def api_chain(symbol: str | None = SymbolQ):
+        return _hub(symbol).chain_payload()
 
     @app.get("/api/option_series")
     def api_option_series(
         keys: str = Query(default="", description="comma-separated, e.g. 24700C,24650P"),
         tf: int = Query(default=1, ge=1, le=60),
         limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
+        symbol: str | None = SymbolQ,
     ):
         wanted = [k.strip().upper() for k in keys.split(",") if k.strip()]
-        return _hub().option_series(wanted, tf=tf, limit=limit)
+        return _hub(symbol).option_series(wanted, tf=tf, limit=limit)
 
     @app.get("/api/minutes")
     def api_minutes(
         limit: int = Query(default=BAR_HISTORY_LIMIT, ge=10, le=RAW_HISTORY_LIMIT),
         tf: int = Query(default=1, ge=1, le=60),
+        symbol: str | None = SymbolQ,
     ):
-        hub = _hub()
+        hub = _hub(symbol)
         bars = aggregate_bars(hub.history_points(), minutes=tf)
         return {"symbol": hub.symbol, "tf": tf, "points": [compact_point(item) for item in bars[-limit:]]}
 
     @app.get("/api/history")
-    def api_history(limit: int = Query(default=BAR_HISTORY_LIMIT, ge=1, le=RAW_HISTORY_LIMIT)):
-        hub = _hub()
+    def api_history(
+        limit: int = Query(default=BAR_HISTORY_LIMIT, ge=1, le=RAW_HISTORY_LIMIT),
+        symbol: str | None = SymbolQ,
+    ):
+        hub = _hub(symbol)
         return JSONResponse(load_history(hub.symbol.lstrip("/"), limit=limit))
 
     @app.get("/api/status")
-    def api_status():
-        return _hub().status()
+    def api_status(symbol: str | None = SymbolQ):
+        return _hub(symbol).status()
 
     @app.post("/api/settings")
     async def api_settings(
-        symbol: str | None = Query(default=None),
+        symbol: str | None = SymbolQ,
         max_dte: int | None = Query(default=None, ge=0, le=7),
         interval: int | None = Query(default=None, ge=1, le=300),
         otm_points: float | None = Query(default=None, ge=0, le=5000),
     ):
-        hub = _hub()
-        if symbol:
-            hub.symbol = symbol.upper()
+        """Settings of one board. `symbol` selects (and starts, if needed) that board;
+        it no longer re-points a shared board, so other viewers are unaffected."""
+        hub = _hub(symbol)
         if max_dte is not None:
             hub.max_dte = max_dte
         if otm_points is not None:
@@ -176,8 +187,8 @@ def create_app(
         return hub.live_payload()
 
     @app.post("/api/tick")
-    async def api_tick():
-        hub = _hub()
+    async def api_tick(symbol: str | None = SymbolQ):
+        hub = _hub(symbol)
         try:
             await asyncio.to_thread(hub.collect_once)
             payload = hub.live_payload() | {"event": "tick"}
@@ -189,8 +200,8 @@ def create_app(
             raise _http_from_exc(exc) from exc
 
     @app.get("/api/stream")
-    async def api_stream(request: Request):
-        hub = _hub()
+    async def api_stream(request: Request, symbol: str | None = SymbolQ):
+        hub = _hub(symbol)
         queue = hub.subscribe()
 
         async def events() -> AsyncIterator[str]:
