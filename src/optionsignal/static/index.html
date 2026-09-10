@@ -292,7 +292,7 @@
         <canvas id="chart" height="360"></canvas>
         <p class="meta" id="chartHint">NQ 선물 캔들(왼쪽 축). 콜 합(빨강)·풋 합(파랑)은 오른쪽 축에 선으로. 휠로 확대/축소 · 최대 12시간.</p>
         <div class="chart-head ratio-head">
-          <div class="label">콜/풋 프리미엄 비율 <span class="meta">콜 Σ(중간가×거래량) ÷ 풋 Σ(중간가×거래량) × 100 · 「선정」 규칙의 모든 행사가 합 기준</span></div>
+          <div class="label">콜/풋 프리미엄 비율 <span class="meta">콜 Σ(중간가×거래량) ÷ 풋 Σ(중간가×거래량) × 100 · 전체 행사가 합계(체인의 모든 외가격, 「선정」과 무관)</span></div>
           <div class="meta" id="ratioNow">—</div>
         </div>
         <canvas id="ratioChart" class="ratio" height="170"></canvas>
@@ -594,9 +594,9 @@
     const CPPI_RGB = "255,217,61";
 
     // History points carry variants as [cppi, call, put]; the live tick carries full objects.
-    function variantOf(p, which) {
+    function variantOf(p, which, key) {
       const bag = p && p[which === "open" ? "cppi_variants_open" : "cppi_variants"];
-      const v = bag && bag[cppiSel];
+      const v = bag && bag[key || cppiSel];
       if (!v) return null;
       if (Array.isArray(v)) return {cppi: v[0], call_premium: v[1], put_premium: v[2]};
       return v;
@@ -977,40 +977,44 @@
           else ctx.fillText(`CPPI ${CPPI_LABELS[cppiSel]} · 0 선은 구간 밖(${cLo > 0 ? "전부 콜 우세" : "전부 풋 우세"})`, padL + 6, padT + 22);
         }
       }
-      // Call and put premium sums of the viewer's CPPI rule, on their own right-hand axis.
+      // Call and put premium sums of the viewer's CPPI rule. Like the CPPI line, each is
+      // fitted to its own high/low in view (10% headroom) so both use the full plot height;
+      // the right-hand labels show each line's own top/bottom.
       const pb = viewBars(bars).filter(b => b.headline_cppi != null && b.headline_call_premium != null && b.headline_put_premium != null);
       if (!pb.length) {
         ctx.fillStyle = "#89a0b5";
         ctx.fillText("옵션 프리미엄이 쌓이면 콜/풋 합 선이 그려집니다.", cssW - padR - 240, padT + 14);
         return;
       }
-      const vals = pb.flatMap(b => [b.headline_call_premium, b.headline_put_premium]);
-      let oMax = Math.max(...vals);
-      let oMin = Math.min(...vals);
-      const oPad = Math.max((oMax - oMin) * 0.1, 1);
-      oMax += oPad;
-      oMin = Math.max(0, oMin - oPad);
-      const oSpan = oMax - oMin || 1;
-      const oY = (v) => padT + (oMax - v) / oSpan * plotH;
+      const fitScale = (field) => {
+        const vals = pb.map(b => b[field]);
+        let hi = Math.max(...vals), lo = Math.min(...vals);
+        const pad = Math.max((hi - lo) * 0.1, 1);
+        hi += pad; lo = Math.max(0, lo - pad);
+        const span = hi - lo || 1;
+        return {hi, lo, y: (v) => padT + (hi - v) / span * plotH};
+      };
       ctx.fillStyle = "#89a0b5";
-      ctx.fillText("프리미엄 합", cssW - padR + 6, padT - 6);
-      ctx.fillText(fmt(oMax, 0), cssW - padR + 6, padT + 10);
-      ctx.fillText(fmt(oMin, 0), cssW - padR + 6, cssH - padB);
+      ctx.fillText("프리미엄 합(선별 눈금)", cssW - padR + 6, padT - 6);
       const endLabels = [];
-      [["headline_call_premium", CALL_LINE, "콜 합"], ["headline_put_premium", PUT_LINE, "풋 합"]].forEach(([field, color, name]) => {
+      [["headline_call_premium", CALL_LINE, "콜 합", 0], ["headline_put_premium", PUT_LINE, "풋 합", 1]].forEach(([field, color, name, idx]) => {
+        const sc = fitScale(field);
+        ctx.fillStyle = color;
+        ctx.fillText(`${name} 고 ${fmt(sc.hi, 0)}`, cssW - padR + 6, padT + 10 + idx * 12);
+        ctx.fillText(`${name} 저 ${fmt(sc.lo, 0)}`, cssW - padR + 6, cssH - padB - 12 + idx * 12);
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.beginPath();
         pb.forEach((b, i) => {
           const x = xAt(parseTs(b) + stepMs / 2);
-          const y = oY(b[field]);
+          const y = sc.y(b[field]);
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         });
         ctx.stroke();
         ctx.lineWidth = 1;
         const end = pb[pb.length - 1];
         const ex = xAt(parseTs(end) + stepMs / 2);
-        const ey = oY(end[field]);
+        const ey = sc.y(end[field]);
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(ex, ey, 3, 0, Math.PI * 2);
@@ -1019,11 +1023,12 @@
       });
       // Keep end-of-line labels from stacking on top of each other.
       endLabels.sort((a, b) => a.y - b.y);
+      endLabels.forEach(l => { l.y = Math.max(l.y, padT + 34); });
       for (let i = 1; i < endLabels.length; i++) {
         if (endLabels[i].y < endLabels[i - 1].y + 13) endLabels[i].y = endLabels[i - 1].y + 13;
       }
       for (let i = endLabels.length - 1; i >= 0; i--) {
-        endLabels[i].y = Math.min(endLabels[i].y, cssH - padB - 4 - (endLabels.length - 1 - i) * 13);
+        endLabels[i].y = Math.min(endLabels[i].y, cssH - padB - 30 - (endLabels.length - 1 - i) * 13);
       }
       endLabels.forEach((lbl) => {
         ctx.fillStyle = lbl.color;
@@ -1033,7 +1038,8 @@
 
     let xAxis = null;
 
-    // ---- call/put premium ratio (all strikes of the viewer's CPPI rule) ----
+    // ---- call/put premium ratio: always the whole chain, not the 선정 rule ----
+    const RATIO_KEY = "all";
     function drawRatioChart(axis) {
       const canvas = $("ratioChart");
       const dpr = window.devicePixelRatio || 1;
@@ -1064,10 +1070,10 @@
       const endTs = axis ? axis.endTs : Date.now();
       const bars = chartBars().map(b => {
         const ts = parseTs(b);
-        const close = variantRatio(variantOf(b, "close"));
+        const close = variantRatio(variantOf(b, "close", RATIO_KEY));
         if (ts == null || close == null || ts < startTs) return null;
-        const open = variantRatio(variantOf(b, "open")) ?? close;
-        const hl = (b._ratio_hl && b._ratio_hl[cppiSel]) || [Math.min(open, close), Math.max(open, close)];
+        const open = variantRatio(variantOf(b, "open", RATIO_KEY)) ?? close;
+        const hl = (b._ratio_hl && b._ratio_hl[RATIO_KEY]) || [Math.min(open, close), Math.max(open, close)];
         return {ts, open, close, high: Math.max(hl[1], open, close), low: Math.min(hl[0], open, close)};
       }).filter(Boolean);
       if (!bars.length) {
@@ -1118,13 +1124,13 @@
         ctx.fillRect(x - bodyW / 2, t, bodyW, Math.max(1, btm - t));
       });
       const last = bars[bars.length - 1];
-      const liveV = lastTick ? variantOf(lastTick, "close") : null;
+      const liveV = lastTick ? variantOf(lastTick, "close", RATIO_KEY) : null;
       const now = variantRatio(liveV) ?? last.close;
       ctx.fillStyle = now >= 100 ? "#3dd68c" : "#ff5d73";
       ctx.fillText(fmt(now, 0), cssW - padR + 4, yAt(last.close) + 4 + (Math.abs(yAt(last.close) - yAt(100)) < 12 ? 12 : 0));
       const side = now >= 100 ? "콜 우위" : "풋 우위";
       $("ratioNow").innerHTML = `<b class="${now >= 100 ? "call" : "put"}">${fmt(now, 0)}</b> · ${side}` +
-        (liveV ? ` · 콜 ${fmt(liveV.call_premium, 0)} / 풋 ${fmt(liveV.put_premium, 0)} · ${CPPI_LABELS[cppiSel]}` : "");
+        (liveV ? ` · 콜 ${fmt(liveV.call_premium, 0)} / 풋 ${fmt(liveV.put_premium, 0)} · 전체 행사가(${CPPI_LABELS[RATIO_KEY]})` : "");
     }
 
     function apply(payload) {
