@@ -311,7 +311,7 @@
               <option value="p300">등가격 ±300포</option>
             </select>
           </label>
-          <span class="meta">선정과 옵션 선택은 이 브라우저에만 적용됩니다. 지수 선택만 모든 화면 공통.</span>
+          <span class="meta">선정은 이 브라우저에만 적용됩니다. 지수 선택도 화면(탭)마다 따로 저장됩니다.</span>
         </div>
         <section class="hero">
           <article class="card" id="cppiCard">
@@ -402,6 +402,29 @@
     };
     let futCode = "NQ";
     let futName = "나스닥 선물";
+    // Which board this tab watches. URL ?symbol= wins (shareable), then this browser's last
+    // choice, else the server default. Never sent as a shared setting: other tabs keep theirs.
+    const SYMBOL_KEY = "optionsignal.symbol";
+    let boardSymbol = null;
+    try {
+      const q = new URLSearchParams(location.search).get("symbol");
+      boardSymbol = (q && q.trim()) || localStorage.getItem(SYMBOL_KEY) || null;
+    } catch {}
+    function api(path, params) {
+      const u = new URL(path, location.origin);
+      if (boardSymbol) u.searchParams.set("symbol", boardSymbol);
+      Object.entries(params || {}).forEach(([k, v]) => { if (v != null && v !== "") u.searchParams.set(k, v); });
+      return u.pathname + u.search;
+    }
+    function rememberSymbol(sym) {
+      boardSymbol = sym;
+      try { localStorage.setItem(SYMBOL_KEY, sym); } catch {}
+      try {
+        const u = new URL(location.href);
+        u.searchParams.set("symbol", sym);
+        history.replaceState(null, "", u.pathname + u.search + u.hash);
+      } catch {}
+    }
     function applySymbolLabels(info) {
       if (!info || !info.code) return;
       const changed = info.code !== futCode;
@@ -767,10 +790,11 @@
               ? `${status.share_hint}:${status.port || location.port || 8000}`
               : (status.share_hint || location.host));
       $("share").textContent = `공유 ${String(share).replace(/^https?:\/\//, "")}`;
-      if (status.symbol && $("symbol").value !== status.symbol) {
+      if (status.symbol) {
         const bare = String(status.symbol).replace(/^[\/^]/, "");
         const want = SYMBOLS["/" + bare] ? "/" + bare : status.symbol;
-        if ([...$("symbol").options].some(o => o.value === want)) $("symbol").value = want;
+        if ([...$("symbol").options].some(o => o.value === want) && $("symbol").value !== want) $("symbol").value = want;
+        if (boardSymbol !== status.symbol) rememberSymbol(status.symbol);
       }
       if (status.max_dte != null) $("maxDte").value = status.max_dte;
       if (status.error) $("summary").innerHTML = `<span class="error">${status.error}</span>`;
@@ -1118,7 +1142,7 @@
     }
 
     async function fetchLive() {
-      const res = await fetch("/api/live");
+      const res = await fetch(api("/api/live"));
       const data = await res.json();
       if (!res.ok) {
         $("summary").innerHTML = `<span class="error">${data.detail || "failed"}</span>`;
@@ -1127,20 +1151,40 @@
       apply(data);
     }
 
+    let stream = null;
     function connect() {
-      const es = new EventSource("/api/stream");
+      if (stream) { stream.close(); stream = null; }
+      const es = new EventSource(api("/api/stream"));
+      stream = es;
       es.onmessage = (ev) => {
+        if (stream !== es) return;  // a stale stream after switching boards
         try { apply(JSON.parse(ev.data)); } catch (e) { /* ignore malformed tick */ }
       };
       es.onerror = () => {
         es.close();
-        setTimeout(connect, 3000);
+        if (stream === es) setTimeout(connect, 3000);
       };
+    }
+    function switchBoard(sym) {
+      // This tab only: new board = new stream, fresh points, fresh card. Other tabs are untouched.
+      rememberSymbol(sym);
+      points = [];
+      lastTick = null;
+      chainData = null;
+      backfillInfo = null;
+      $("summary").textContent = "";
+      $("deltaNote").textContent = `${sym} 보드로 전환하는 중… (이 화면만)`;
+      const info = SYMBOLS[sym];
+      if (info) applySymbolLabels({code: info.code, name_ko: info.name});
+      drawChart(points);
+      connect();
+      fetchLive();
+      if (activePanel === "chainPanel") fetchChain();
     }
 
     $("tick").onclick = async () => {
       $("deltaNote").textContent = "지금 체인을 찍는 중…";
-      const res = await fetch("/api/tick", {method: "POST"});
+      const res = await fetch(api("/api/tick"), {method: "POST"});
       const data = await res.json();
       if (!res.ok) {
         $("summary").innerHTML = `<span class="error">${data.detail || "tick failed"}</span>`;
@@ -1152,13 +1196,9 @@
       apply(data);
     };
     async function pushSettings() {
-      const symbol = $("symbol").value;
       const maxDte = $("maxDte").value;
-      $("deltaNote").textContent = "지수 선택을 모든 화면에 반영하는 중…";
-      const res = await fetch(
-        `/api/settings?symbol=${encodeURIComponent(symbol)}&max_dte=${maxDte}`,
-        {method: "POST"},
-      );
+      $("deltaNote").textContent = "이 보드의 설정을 반영하는 중…";
+      const res = await fetch(api("/api/settings", {max_dte: maxDte}), {method: "POST"});
       const data = await res.json();
       if (!res.ok) {
         $("summary").innerHTML = `<span class="error">${data.detail || "settings failed"}</span>`;
@@ -1166,7 +1206,7 @@
       }
       apply(data);
     }
-    $("symbol").onchange = pushSettings;
+    $("symbol").onchange = () => switchBoard($("symbol").value);
     $("maxDte").onchange = pushSettings;
     $("otmPoints").value = cppiSel;
     $("otmPoints").onchange = () => {
@@ -1250,7 +1290,7 @@
       if (chainBusy) return;
       chainBusy = true;
       try {
-        const res = await fetch("/api/chain");
+        const res = await fetch(api("/api/chain"));
         chainData = await res.json();
         paintChain(chainData);
       } catch (e) {

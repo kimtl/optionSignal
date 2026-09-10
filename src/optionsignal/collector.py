@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import socket
+import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -409,3 +410,105 @@ class LiveHub:
         self._running = False
         if self.tasty_feed is not None:
             self.tasty_feed.stop()
+
+
+def normalize_symbol(symbol: str | None, fallback: str) -> str:
+    """Canonical board key: futures roots as '/NQ', equities/indices upper-cased ('QQQ', '^NDX')."""
+    text = (symbol or "").strip().upper()
+    if not text:
+        return fallback
+    if is_futures_root(text):
+        return "/" + product_code(text)
+    return text
+
+
+class HubRegistry:
+    """One LiveHub per symbol so viewers can watch NQ, ES and YM side by side.
+
+    Hubs are created on first request and keep running for the life of the
+    process; each has its own tastytrade feed, backfill, tick loop and SSE
+    subscribers, so switching the index in one browser tab never touches another.
+    """
+
+    def __init__(self, default_symbol: str, start_collector: bool = True, **hub_kwargs: Any) -> None:
+        self.default_symbol = normalize_symbol(default_symbol, default_symbol)
+        self.start_collector = start_collector
+        self.hub_kwargs = hub_kwargs
+        self.hubs: dict[str, LiveHub] = {}
+        self.tasks: dict[str, asyncio.Task] = {}
+        self.port = 8000
+        self._started = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()  # sync endpoints run in worker threads
+        self.get(self.default_symbol)
+
+    def key(self, symbol: str | None) -> str:
+        return normalize_symbol(symbol, self.default_symbol)
+
+    def get(self, symbol: str | None = None) -> LiveHub:
+        key = self.key(symbol)
+        with self._lock:
+            hub = self.hubs.get(key)
+            if hub is None:
+                hub = LiveHub(symbol=key, **self.hub_kwargs)
+                hub.port = self.port
+                self.hubs[key] = hub
+                if self._started:
+                    self._launch(key, hub)
+        return hub
+
+    @property
+    def default(self) -> LiveHub:
+        return self.hubs[self.default_symbol]
+
+    def _launch(self, key: str, hub: LiveHub) -> None:
+        loop = self._loop
+        if not self.start_collector or loop is None or key in self.tasks:
+            return
+
+        def spawn() -> None:
+            if key not in self.tasks:
+                self.tasks[key] = loop.create_task(hub.run(), name=f"optionsignal-collector-{key.strip('/')}")
+                log.info("board started for %s", key)
+
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            spawn()
+        else:
+            # Created from a threadpool request handler: hand the task to the server loop.
+            loop.call_soon_threadsafe(spawn)
+
+    def start(self) -> None:
+        """Call from the running event loop (app lifespan)."""
+        self._loop = asyncio.get_running_loop()
+        self._started = True
+        for key, hub in list(self.hubs.items()):
+            self._launch(key, hub)
+
+    async def stop(self) -> None:
+        self._started = False
+        for hub in self.hubs.values():
+            hub.stop()
+        for task in self.tasks.values():
+            task.cancel()
+        for task in self.tasks.values():
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self.tasks.clear()
+
+    def overview(self) -> list[dict]:
+        return [
+            {
+                "symbol": key,
+                "tick": hub.latest is not None,
+                "error": hub.error,
+                "viewers": len(hub.subscribers),
+                "last_tick_at": hub.last_tick_at.isoformat(timespec="seconds") if hub.last_tick_at else None,
+            }
+            for key, hub in self.hubs.items()
+        ]
