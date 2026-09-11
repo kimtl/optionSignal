@@ -20,6 +20,7 @@ from .metrics import (
     session_date,
     strike_range,
     total_volume,
+    trade_price,
     volume_premium,
     volume_weighted_iv,
     volume_weighted_pct_change,
@@ -41,7 +42,8 @@ CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
     ("p300", None, 300.0),
 )
 # Whole chain including ATM and ITM quotes: not a CPPI selection (ITM premium is mostly
-# intrinsic value), only the board's call/put premium ratio uses it.
+# intrinsic value), only the board's call/put premium ratio uses it. It sums traded
+# prices (last × volume) rather than midpoints so it reflects what actually printed.
 CHAIN_VARIANT = "chain"
 DEFAULT_HEADLINE_DTE = 0
 
@@ -101,11 +103,16 @@ def _cppi_variant(
     points: float | None,
     rr: float | None,
     otm_only: bool = True,
+    price: str = "mid",
 ) -> dict:
-    """CPPI and premiums for one selection rule, plus the bias text it implies."""
+    """CPPI and premiums for one selection rule, plus the bias text it implies.
+
+    `price` picks what multiplies volume: "mid" (bid/ask midpoint, CPPI rules) or
+    "last" (traded price, whole-chain ratio).
+    """
     if not otm_only:
-        calls = [q for q in quotes if q.right == "call" and q.mid and q.mid > 0]
-        puts = [q for q in quotes if q.right == "put" and q.mid and q.mid > 0]
+        calls = [q for q in quotes if q.right == "call" and trade_price(q)]
+        puts = [q for q in quotes if q.right == "put" and trade_price(q)]
         span = strike_range(quotes)
         call_window = put_window = list(span) if span else None
     elif points is None and band is None:
@@ -118,8 +125,8 @@ def _cppi_variant(
         calls, puts = select_near_otm(quotes, spot, b, points=points)
         cw, pw = otm_windows(spot, b, points)
         call_window, put_window = list(cw), list(pw)
-    call_prem = volume_premium(calls)
-    put_prem = volume_premium(puts)
+    call_prem = volume_premium(calls, price)
+    put_prem = volume_premium(puts, price)
     cppi = call_put_premium_imbalance(call_prem, put_prem)
     call_surge = volume_weighted_pct_change(calls)
     put_surge = volume_weighted_pct_change(puts)
@@ -204,7 +211,9 @@ def build_report(
         key: _cppi_variant(headline_all, chain.spot, band, points, rr)
         for key, band, points in CPPI_VARIANTS
     }
-    variants[CHAIN_VARIANT] = _cppi_variant(headline_all, chain.spot, None, None, rr, otm_only=False)
+    variants[CHAIN_VARIANT] = _cppi_variant(
+        headline_all, chain.spot, None, None, rr, otm_only=False, price="last"
+    )
     ratio = premium_ratio(call_prem, put_prem)
     if ratio == float("inf"):
         ratio = None

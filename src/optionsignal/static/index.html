@@ -292,7 +292,7 @@
         <canvas id="chart" height="360"></canvas>
         <p class="meta" id="chartHint">NQ 선물 캔들(왼쪽 축). 콜 합(빨강)·풋 합(파랑, 상하 반전)은 오른쪽 축에 선으로. 휠로 확대/축소 · 최대 12시간.</p>
         <div class="chart-head ratio-head">
-          <div class="label">콜/풋 프리미엄 비율 <span class="meta">콜 Σ(중간가×거래량) ÷ 풋 Σ(중간가×거래량) × 100 · 체인의 모든 행사가 합계(내가격·등가격 포함, 「선정」과 무관)</span></div>
+          <div class="label">콜/풋 프리미엄 비율 <span class="meta">콜 Σ(체결가×거래량) ÷ 풋 Σ(체결가×거래량) × 100 · 체인의 모든 행사가 합계(내가격·등가격 포함)</span></div>
           <div class="meta" id="ratioNow">—</div>
         </div>
         <canvas id="ratioChart" class="ratio" height="170"></canvas>
@@ -1141,7 +1141,7 @@
       ctx.fillText(fmt(now, 0), cssW - padR + 4, yAt(last.close) + 4 + (Math.abs(yAt(last.close) - yAt(100)) < 12 ? 12 : 0));
       const side = now >= 100 ? "콜 우위" : "풋 우위";
       $("ratioNow").innerHTML = `<b class="${now >= 100 ? "call" : "put"}">${fmt(now, 0)}</b> · ${side}` +
-        (liveV ? ` · 콜 ${fmt(liveV.call_premium, 0)} / 풋 ${fmt(liveV.put_premium, 0)} · 전체 행사가(내가격·등가격 포함)` : "");
+        (liveV ? ` · 콜 ${fmt(liveV.call_premium, 0)} / 풋 ${fmt(liveV.put_premium, 0)} · 체결가 기준 · 전체 행사가` : "");
     }
 
     function apply(payload) {

@@ -202,12 +202,31 @@ def strike_range(quotes: Iterable[OptionQuote]) -> list[float] | None:
     return [min(strikes), max(strikes)]
 
 
-def volume_premium(quotes: Iterable[OptionQuote]) -> float:
+def trade_price(quote: OptionQuote) -> float | None:
+    """Last traded price; falls back to the midpoint when the contract has not printed yet."""
+    if quote.last is not None and quote.last > 0:
+        return float(quote.last)
+    if quote.mid is not None and quote.mid > 0:
+        return float(quote.mid)
+    return None
+
+
+def quote_price(quote: OptionQuote, price: str = "mid") -> float | None:
+    """Price used for premium flow: "mid" (bid/ask midpoint) or "last" (traded price)."""
+    if price == "last":
+        return trade_price(quote)
+    if quote.mid is not None and quote.mid > 0:
+        return float(quote.mid)
+    return None
+
+
+def volume_premium(quotes: Iterable[OptionQuote], price: str = "mid") -> float:
     total = 0.0
     for quote in quotes:
-        if quote.mid is None or quote.mid <= 0:
+        value = quote_price(quote, price)
+        if value is None:
             continue
-        total += quote.mid * max(quote.volume, 0)
+        total += value * max(quote.volume, 0)
     return total
 
 

@@ -297,6 +297,34 @@ def test_build_report_computes_every_cppi_variant():
     assert v["all"]["call_count"] == 28 and v["all"]["put_count"] == 28
 
 
+def test_chain_variant_uses_last_trade_price_while_cppi_uses_mid():
+    from dataclasses import replace
+
+    from optionsignal.metrics import trade_price, volume_premium
+
+    # mid 10, last 12 on every call; puts mid 10, last 8. Volume 10 each.
+    quotes = []
+    for strike in range(24600, 24825, 25):
+        quotes.append(replace(quote("call", strike, 10.0), last=12.0))
+        quotes.append(replace(quote("put", strike, 10.0), last=8.0))
+    unprinted = replace(quote("call", 25000, 4.0, volume=3), last=None)  # never traded: falls back to mid
+    quotes.append(unprinted)
+    assert trade_price(unprinted) == 4.0
+    assert volume_premium(quotes[:2], "last") == 12.0 * 10 + 8.0 * 10
+    assert volume_premium(quotes[:2], "mid") == 10.0 * 10 + 10.0 * 10
+
+    chain = OptionChain(
+        symbol="NQ", spot=24712.0, futures_symbol="/NQ", futures_price=24712.0,
+        asof=NOW, quotes=quotes, multiplier=20, source="test",
+    )
+    v = build_report(chain).cppi_variants
+    assert v["chain"]["call_premium"] == 9 * 12.0 * 10 + 4.0 * 3
+    assert v["chain"]["put_premium"] == 9 * 8.0 * 10
+    # OTM CPPI rules still use the midpoint, so equal mids give equal per-contract flow.
+    assert v["p100"]["call_premium"] == 10.0 * 10 * v["p100"]["call_count"]
+    assert v["p100"]["put_premium"] == 10.0 * 10 * v["p100"]["put_count"]
+
+
 def test_cppi_variant_reports_rule_window_and_counts():
     quotes = []
     for strike in range(24000, 25425, 25):
