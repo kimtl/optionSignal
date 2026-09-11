@@ -110,32 +110,6 @@ def weighted_mean(values: Iterable[float], weights: Iterable[float]) -> float | 
     return num / den
 
 
-def in_moneyness_band(strike: float, spot: float, band: float) -> bool:
-    if spot <= 0:
-        return False
-    return (1.0 - band) * spot <= strike <= (1.0 + band) * spot
-
-
-def is_otm(quote: OptionQuote, spot: float, atm: float | None) -> bool:
-    """Strictly out-of-the-money and not the ATM strike: calls above spot, puts below.
-
-    ITM and ATM quotes are excluded from CPPI so that call and put premium are
-    compared on mirror-image strike sets (spot 100 → calls 101+, puts 99-).
-    """
-    if quote.mid is None or quote.mid <= 0 or spot <= 0:
-        return False
-    if atm is not None and quote.strike == atm:
-        return False
-    if quote.right == "call":
-        return quote.strike > spot
-    return quote.strike < spot
-
-
-def is_near_otm(quote: OptionQuote, spot: float, band: float, atm: float | None = None) -> bool:
-    """OTM (not ATM) quotes within ``band`` percent of spot."""
-    return is_otm(quote, spot, atm) and in_moneyness_band(quote.strike, spot, band)
-
-
 def atm_strike(quotes: Iterable[OptionQuote], spot: float) -> float | None:
     strikes = [q.strike for q in quotes if q.strike > 0]
     if not strikes or spot <= 0:
@@ -143,56 +117,47 @@ def atm_strike(quotes: Iterable[OptionQuote], spot: float) -> float | None:
     return min(strikes, key=lambda k: abs(k - spot))
 
 
-def select_near_otm(
+def has_trade_price(quote: OptionQuote) -> bool:
+    """A quote can contribute premium flow once it has a traded (or, failing that, mid) price."""
+    return trade_price(quote) is not None
+
+
+def strike_window(
+    spot: float, band: float | None = None, points: float | None = None
+) -> tuple[float, float] | None:
+    """[low, high] strike span a rule covers on *both* sides, centred on spot.
+
+    points=N → [spot-N, spot+N]; band=b → [spot·(1-b), spot·(1+b)]; neither → None
+    (the whole chain). Calls and puts always share the same window, ATM and ITM
+    strikes included.
+    """
+    if points is not None and points > 0:
+        return spot - points, spot + points
+    if band is not None and band > 0:
+        return spot * (1 - band), spot * (1 + band)
+    return None
+
+
+def select_strikes(
     quotes: Iterable[OptionQuote],
     spot: float,
-    band: float,
+    band: float | None = None,
     points: float | None = None,
 ) -> tuple[list[OptionQuote], list[OptionQuote]]:
-    """Pick the call and put sides used for CPPI: OTM only, mirror-image windows.
+    """Call and put sides used for CPPI and premium sums: every strike, same window.
 
-    points=None: OTM strikes within ``band`` percent of spot.
-    points=N: OTM strikes out to N index points, so 100/150/200 points on NQ
-    mean the same thing on every trading day.
-    Spot 100, N=20 → calls 101~120, puts 80~99. The ATM strike and every ITM
-    quote are left out on both sides.
+    No window → the whole quoted chain (ITM, ATM and OTM alike). With points=N the
+    window is spot±N for both sides, so spot 100, N=20 → calls 80~120, puts 80~120.
+    Quotes without any price are skipped.
     """
-    quotes = list(quotes)
-    atm = atm_strike(quotes, spot)
-    (c_lo, c_hi), (p_lo, p_hi) = otm_windows(spot, band, points)
-    calls = [q for q in quotes if q.right == "call" and is_otm(q, spot, atm) and c_lo < q.strike <= c_hi]
-    puts = [q for q in quotes if q.right == "put" and is_otm(q, spot, atm) and p_lo <= q.strike < p_hi]
+    quotes = [q for q in quotes if has_trade_price(q)]
+    window = strike_window(spot, band, points)
+    if window is not None:
+        lo, hi = window
+        quotes = [q for q in quotes if lo <= q.strike <= hi]
+    calls = [q for q in quotes if q.right == "call"]
+    puts = [q for q in quotes if q.right == "put"]
     return calls, puts
-
-
-def select_all_otm(
-    quotes: Iterable[OptionQuote],
-    spot: float,
-) -> tuple[list[OptionQuote], list[OptionQuote]]:
-    """Every quoted OTM call and put of the chain (ATM/ITM excluded), no distance cap."""
-    quotes = list(quotes)
-    atm = atm_strike(quotes, spot)
-    calls = [q for q in quotes if q.right == "call" and is_otm(q, spot, atm)]
-    puts = [q for q in quotes if q.right == "put" and is_otm(q, spot, atm)]
-    return calls, puts
-
-
-def otm_windows(
-    spot: float, band: float, points: float | None = None
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    """(call_window, put_window) a CPPI rule covers: (spot, spot+N] and [spot-N, spot).
-
-    The spot-side edge is exclusive; the two windows are mirror images.
-    """
-    if points is None or points <= 0:
-        return (spot, spot * (1 + band)), (spot * (1 - band), spot)
-    return (spot, spot + points), (spot - points, spot)
-
-
-def selection_window(spot: float, band: float, points: float | None = None) -> tuple[float, float]:
-    """Whole [low, high] strike span a CPPI rule covers across both sides."""
-    (_, hi), (lo, _) = otm_windows(spot, band, points)
-    return lo, hi
 
 
 def strike_range(quotes: Iterable[OptionQuote]) -> list[float] | None:
@@ -211,8 +176,8 @@ def trade_price(quote: OptionQuote) -> float | None:
     return None
 
 
-def quote_price(quote: OptionQuote, price: str = "mid") -> float | None:
-    """Price used for premium flow: "mid" (bid/ask midpoint) or "last" (traded price)."""
+def quote_price(quote: OptionQuote, price: str = "last") -> float | None:
+    """Price used for premium flow: "last" (traded price, the board default) or "mid"."""
     if price == "last":
         return trade_price(quote)
     if quote.mid is not None and quote.mid > 0:
@@ -220,7 +185,8 @@ def quote_price(quote: OptionQuote, price: str = "mid") -> float | None:
     return None
 
 
-def volume_premium(quotes: Iterable[OptionQuote], price: str = "mid") -> float:
+def volume_premium(quotes: Iterable[OptionQuote], price: str = "last") -> float:
+    """Σ(price × day volume): premium that actually traded, by default at the last print."""
     total = 0.0
     for quote in quotes:
         value = quote_price(quote, price)
