@@ -40,7 +40,7 @@ def _print_report(report) -> None:
           f"vol {report.headline_put_volume:,}")
     print(f"  콜/풋 프리미엄 비율            {_fmt_num(report.premium_ratio, 3)}")
     print(f"  리스크 리버설 (25Δ 콜IV-풋IV)  {_fmt_pct(report.risk_reversal)}")
-    print(f"  OTM 콜 IV / 풋 IV              {_fmt_pct(report.otm_call_iv)} / {_fmt_pct(report.otm_put_iv)}")
+    print(f"  콜 IV / 풋 IV (거래량 가중)      {_fmt_pct(report.otm_call_iv)} / {_fmt_pct(report.otm_put_iv)}")
     print(f"  세션 급등 갭 (콜%−풋%)         {_fmt_num(report.session_surge_gap, 1)}")
     print(f"  bias {report.bias}   score {report.score:+d}")
     print()

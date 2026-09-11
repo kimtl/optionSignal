@@ -14,13 +14,11 @@ from .metrics import (
     premium_ratio,
     risk_reversal_iv,
     sane_iv,
-    otm_windows,
-    select_all_otm,
-    select_near_otm,
+    select_strikes,
     session_date,
     strike_range,
+    strike_window,
     total_volume,
-    trade_price,
     volume_premium,
     volume_weighted_iv,
     volume_weighted_pct_change,
@@ -31,9 +29,11 @@ from .models import ExpirySlice, OptionChain, OptionQuote, SignalReport
 NY = ZoneInfo("America/New_York")
 DEFAULT_BAND = 0.03
 DEFAULT_WING_PCT = 0.03
-# Every CPPI selection the board offers is computed on each tick so each viewer can pick
-# their own without changing anything on the server: (key, moneyness band, points from ATM).
-# ("all", None, None) = every quoted OTM strike of the 0DTE chain, no distance cap.
+# Every CPPI rule the board offers is computed on each tick so each viewer can pick
+# their own without changing anything on the server: (key, moneyness band, points from spot).
+# ("all", None, None) = the whole quoted 0DTE chain (ITM, ATM and OTM), no distance cap.
+# ("pN", None, N) = every strike within spot±N on both sides. All of them sum
+# last traded price × day volume.
 CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
     ("all", None, None),
     ("p100", None, 100.0),
@@ -41,10 +41,6 @@ CPPI_VARIANTS: tuple[tuple[str, float | None, float | None], ...] = (
     ("p200", None, 200.0),
     ("p300", None, 300.0),
 )
-# Whole chain including ATM and ITM quotes: not a CPPI selection (ITM premium is mostly
-# intrinsic value), only the board's call/put premium ratio uses it. It sums traded
-# prices (last × volume) rather than midpoints so it reflects what actually printed.
-CHAIN_VARIANT = "chain"
 DEFAULT_HEADLINE_DTE = 0
 
 
@@ -69,7 +65,7 @@ def _slice_for_expiry(
     wing_pct: float,
     otm_points: float | None = None,
 ) -> ExpirySlice:
-    calls, puts = select_near_otm(quotes, spot, band, points=otm_points)
+    calls, puts = select_strikes(quotes, spot, points=otm_points)
     call_prem = volume_premium(calls)
     put_prem = volume_premium(puts)
     call_iv = volume_weighted_iv(calls)
@@ -102,31 +98,19 @@ def _cppi_variant(
     band: float | None,
     points: float | None,
     rr: float | None,
-    otm_only: bool = True,
-    price: str = "mid",
 ) -> dict:
-    """CPPI and premiums for one selection rule, plus the bias text it implies.
+    """CPPI and premiums for one rule (whole chain or spot±N), plus the bias text it implies.
 
-    `price` picks what multiplies volume: "mid" (bid/ask midpoint, CPPI rules) or
-    "last" (traded price, whole-chain ratio).
+    Both sides share one strike window and sum last traded price × volume.
     """
-    if not otm_only:
-        calls = [q for q in quotes if q.right == "call" and trade_price(q)]
-        puts = [q for q in quotes if q.right == "put" and trade_price(q)]
+    calls, puts = select_strikes(quotes, spot, band, points)
+    window = strike_window(spot, band, points)
+    if window is None:
         span = strike_range(quotes)
-        call_window = put_window = list(span) if span else None
-    elif points is None and band is None:
-        calls, puts = select_all_otm(quotes, spot)
-        span = strike_range(quotes)
-        call_window = [spot, span[1]] if span else None
-        put_window = [span[0], spot] if span else None
-    else:
-        b = band if band is not None else DEFAULT_BAND
-        calls, puts = select_near_otm(quotes, spot, b, points=points)
-        cw, pw = otm_windows(spot, b, points)
-        call_window, put_window = list(cw), list(pw)
-    call_prem = volume_premium(calls, price)
-    put_prem = volume_premium(puts, price)
+        window = tuple(span) if span else None
+    call_window = put_window = list(window) if window else None
+    call_prem = volume_premium(calls)
+    put_prem = volume_premium(puts)
     cppi = call_put_premium_imbalance(call_prem, put_prem)
     call_surge = volume_weighted_pct_change(calls)
     put_surge = volume_weighted_pct_change(puts)
@@ -176,7 +160,7 @@ def build_report(
         )
         if dte <= max_dte:
             headline_all.extend(quotes)
-            calls, puts = select_near_otm(quotes, chain.spot, moneyness_band, points=otm_points)
+            calls, puts = select_strikes(quotes, chain.spot, points=otm_points)
             headline_calls.extend(calls)
             headline_puts.extend(puts)
 
@@ -211,9 +195,6 @@ def build_report(
         key: _cppi_variant(headline_all, chain.spot, band, points, rr)
         for key, band, points in CPPI_VARIANTS
     }
-    variants[CHAIN_VARIANT] = _cppi_variant(
-        headline_all, chain.spot, None, None, rr, otm_only=False, price="last"
-    )
     ratio = premium_ratio(call_prem, put_prem)
     if ratio == float("inf"):
         ratio = None

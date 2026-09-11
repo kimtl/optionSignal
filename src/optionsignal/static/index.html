@@ -260,11 +260,11 @@
         <p class="meta" id="meta"></p>
       </article>
       <article class="card" id="premCard">
-        <div class="label">콜/풋 프리미엄 합 · Σ(중간가×거래량) <span id="premRule" class="meta"></span> <span id="pickExpiry" class="meta"></span></div>
+        <div class="label">콜/풋 프리미엄 합 · Σ(체결가×거래량) <span id="premRule" class="meta"></span> <span id="pickExpiry" class="meta"></span></div>
         <div class="prem-row"><i class="dot" style="background:#ff4d5e"></i>콜 합 <b id="premCall">—</b><span class="meta" id="premCallCnt"></span></div>
         <div class="prem-row"><i class="dot" style="background:#4da3ff"></i>풋 합 <b id="premPut">—</b><span class="meta" id="premPutCnt"></span></div>
         <div class="prem-row"><i class="dot" style="background:#ffd93d"></i>CPPI <b id="premCppi">—</b><span class="meta" id="premRatio"></span></div>
-        <p class="meta">합산 범위는 아래 CPPI 섹션의 「선정」(기본 모든 외가격)을 따르며 이 브라우저에만 저장됩니다. 체인의 모든 행사가를 개별 옵션 대신 합산합니다.</p>
+        <p class="meta">체인의 모든 행사가(내가격·등가격·외가격)를 마지막 체결가 기준으로 합산합니다. 범위는 아래 CPPI 섹션의 「범위」(기본 모든 행사가)를 따르며 이 브라우저에만 저장됩니다.</p>
       </article>
     </section>
     <section class="wide board-wide">
@@ -302,16 +302,16 @@
       <details id="cppiDetails">
         <summary>CPPI · 콜-풋 프리미엄 (참고용, 접힘)</summary>
         <div class="controls" style="margin:6px 0 12px">
-          <label class="sub">선정
-            <select id="otmPoints" title="CPPI에 넣을 옵션: 등가격에서 몇 포인트까지 (이 화면에만 적용)">
-              <option value="all">모든 외가격</option>
-              <option value="p100">등가격 ±100포</option>
-              <option value="p150">등가격 ±150포</option>
-              <option value="p200">등가격 ±200포</option>
-              <option value="p300">등가격 ±300포</option>
+          <label class="sub">범위
+            <select id="otmPoints" title="합산할 행사가 범위: 전체 또는 지수 ±N포 (콜·풋 같은 범위, 내가격·등가격 포함, 이 화면에만 적용)">
+              <option value="all">모든 행사가</option>
+              <option value="p100">지수 ±100포</option>
+              <option value="p150">지수 ±150포</option>
+              <option value="p200">지수 ±200포</option>
+              <option value="p300">지수 ±300포</option>
             </select>
           </label>
-          <span class="meta">선정은 이 브라우저에만 적용됩니다. 지수 선택도 화면(탭)마다 따로 저장됩니다.</span>
+          <span class="meta">체결가×거래량 합. 범위는 이 브라우저에만 적용됩니다. 지수 선택도 화면(탭)마다 따로 저장됩니다.</span>
         </div>
         <section class="hero">
           <article class="card" id="cppiCard">
@@ -323,7 +323,7 @@
               <div class="bar-row"><span class="call">콜</span><div class="track"><div id="callBar" class="fill" style="width:0;background:var(--call)"></div></div><span id="callPrem">—</span></div>
               <div class="bar-row"><span class="put">풋</span><div class="track"><div id="putBar" class="fill" style="width:0;background:var(--put)"></div></div><span id="putPrem">—</span></div>
             </div>
-            <p class="meta" id="strikeLine">선정 행사가 —</p>
+            <p class="meta" id="strikeLine">합산 행사가 —</p>
           </article>
           <article class="card" id="deltaCard">
             <div class="label">1분 변화</div>
@@ -335,7 +335,7 @@
           <article class="card">
             <div class="label">리스크 리버설</div>
             <div id="rr" class="mid neutral">RR —</div>
-            <p class="meta" id="ivLine">OTM IV —</p>
+            <p class="meta" id="ivLine">콜 IV — · 풋 IV —</p>
             <table>
               <thead><tr><th>만기</th><th>DTE</th><th>CPPI</th><th>콜 프리미엄</th><th>풋 프리미엄</th><th>RR</th></tr></thead>
               <tbody id="rows"></tbody>
@@ -356,7 +356,7 @@
         <summary>같이 보는 방법</summary>
         한 사람이 <b>python -m optionsignal</b> 로 이 보드를 켜면, 다른 사람은 위 공유 URL만 열면 됩니다.
         서버가 한 번 찍은 값을 모두 같이 봅니다. 차트의 NQ 캔들은 보드가 찍는 간격(기본 5초)의 시세를 1분/5분봉으로 묶은 것이고,
-        옵션 선은 그 시점 중간가입니다. 「옵션 체인」 탭에서 행사가별 거래량·OI·델타를 보고 여기서 고르면 됩니다.
+        콜 합·풋 합 선은 그 시점 체인 전체의 체결가×거래량 합입니다. 「옵션 체인」 탭에서 행사가별 거래량·OI·델타를 볼 수 있습니다.
       </details>
     </section>
   </main>
@@ -439,7 +439,7 @@
 
     let backfillInfo = null;
     function chartHint() {
-      const opt = ` · 콜 합(빨강)·풋 합(파랑, 상하 반전) 선(오른쪽 축, ${CPPI_LABELS[cppiSel]} 외가격)`;
+      const opt = ` · 콜 합(빨강)·풋 합(파랑, 상하 반전) 선(오른쪽 축, ${CPPI_LABELS[cppiSel]} 체결가×거래량)`;
       const cppiTxt = showCppiLine ? ` · CPPI 선(${CPPI_LABELS[cppiSel]}, 표시 구간 고저에 맞춘 눈금)` : "";
       let hist = "";
       if (backfillInfo) {
@@ -585,7 +585,7 @@
     // ---- per-viewer CPPI selection ------------------------------------
     const CPPI_SEL_KEY = "optionsignal.cppiSel";
     const CPPI_LINE_KEY = "optionsignal.cppiLine";
-    const CPPI_LABELS = {all: "모든 외가격", p100: "등가격 ±100포", p150: "등가격 ±150포", p200: "등가격 ±200포", p300: "등가격 ±300포"};
+    const CPPI_LABELS = {all: "모든 행사가", p100: "지수 ±100포", p150: "지수 ±150포", p200: "지수 ±200포", p300: "지수 ±300포"};
     let cppiSel = "all";
     try { const v = localStorage.getItem(CPPI_SEL_KEY); if (v && CPPI_LABELS[v]) cppiSel = v; } catch {}
     let showCppiLine = true;
@@ -596,7 +596,10 @@
     // History points carry variants as [cppi, call, put]; the live tick carries full objects.
     function variantOf(p, which, key) {
       const bag = p && p[which === "open" ? "cppi_variants_open" : "cppi_variants"];
-      const v = bag && bag[key || cppiSel];
+      // Older stored ticks kept the whole-chain sum under "chain" (their "all" was OTM-only);
+      // "all" now means the whole chain, so prefer "chain" when a point still carries it.
+      const k = key || cppiSel;
+      const v = bag && ((k === "all" && bag.chain) || bag[k]);
       if (!v) return null;
       if (Array.isArray(v)) return {cppi: v[0], call_premium: v[1], put_premium: v[2]};
       return v;
@@ -668,15 +671,17 @@
       $("putPrem").textContent = fmt(p, 0);
       const cs = tick.headline_call_strikes;
       const ps = tick.headline_put_strikes;
-      const rule = tick.otm_points ? `등가격 ±${fmt(tick.otm_points, 0)}포` : (tick.moneyness_band ? `등가격 ±${fmt(tick.moneyness_band * 100, 0)}% 밴드` : "모든 외가격");
       const rng = (r) => r && r.length === 2 ? (r[0] === r[1] ? fmt(r[0], 0) : `${fmt(r[0], 0)}~${fmt(r[1], 0)}`) : "—";
       const vsel = variantOf(rawTick, "close") || {};
       const cnt = (n) => n == null ? "" : ` ${n}개`;
-      let line = `${rule}`;
-      if (vsel.call_window && vsel.put_window) line += ` · 외가격만(등가격·내가격 제외) 콜 ${fmt(vsel.call_window[0], 0)} 초과~${fmt(vsel.call_window[1], 0)} · 풋 ${fmt(vsel.put_window[0], 0)}~${fmt(vsel.put_window[1], 0)} 미만`;
-      line += ` · 실제 합산 콜 ${rng(cs)}${cnt(vsel.call_count)} · 풋 ${rng(ps)}${cnt(vsel.put_count)}`;
-      const narrow = cppiSel !== "all" && vsel.call_window && cs && (cs[1] < vsel.call_window[1] - 1 || (ps && ps[0] > vsel.put_window[0] + 1));
-      if (narrow) line += " · 규칙 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
+      // Both sides share one window (ITM/ATM included); the chart card shows the viewer's own rule.
+      const vcs = vsel.call_strikes || cs;
+      const vps = vsel.put_strikes || ps;
+      let line = `${CPPI_LABELS[cppiSel]} · 체결가×거래량`;
+      if (vsel.call_window) line += ` · 범위 ${fmt(vsel.call_window[0], 0)}~${fmt(vsel.call_window[1], 0)}(내가격·등가격 포함)`;
+      line += ` · 실제 합산 콜 ${rng(vcs)}${cnt(vsel.call_count)} · 풋 ${rng(vps)}${cnt(vsel.put_count)}`;
+      const narrow = cppiSel !== "all" && vsel.call_window && vcs && (vcs[1] < vsel.call_window[1] - 1 || (vps && vps[0] > vsel.call_window[0] + 1));
+      if (narrow) line += " · 범위 일부만 호가가 있어 그 범위만 합산했습니다(구독 행사가/호가 부족)";
       $("strikeLine").textContent = line;
       $("delta").textContent = signed(tick.cppi_delta_1m, 3);
       $("delta").className = "big " + tone(tick.cppi_delta_1m, 0.01);
@@ -697,7 +702,7 @@
       $("nq").textContent = nqPx == null ? "—" : fmt(nqPx, 2);
       $("rr").textContent = `RR ${pct(tick.risk_reversal)}`;
       $("rr").className = "mid " + tone(tick.risk_reversal);
-      $("ivLine").textContent = `OTM 콜 IV ${pct(tick.otm_call_iv)} · 풋 IV ${pct(tick.otm_put_iv)}`;
+      $("ivLine").textContent = `거래량 가중 콜 IV ${pct(tick.otm_call_iv)} · 풋 IV ${pct(tick.otm_put_iv)}`;
       $("meta").textContent = `${tick.symbol} ${fmt(tick.spot)} · ${tick.asof ? clock(tick.asof) : ""} · ${tick.source || ""}`;
       $("pickExpiry").textContent = expiryLabel(tick.headline_expiry, tick.headline_dte, tick.session_date);
       const pv = variantOf(rawTick, "close");
@@ -1049,8 +1054,10 @@
 
     let xAxis = null;
 
-    // ---- call/put premium ratio: the whole chain (ATM/ITM included), not the 선정 rule ----
-    const RATIO_KEY = "chain";
+    // ---- call/put premium ratio: always the whole chain (ATM/ITM included), last price × volume ----
+    const RATIO_KEY = "all";
+    // Older stored ticks carried the whole-chain range under "chain"; prefer it when present.
+    const ratioHLOf = (b) => b._ratio_hl && (b._ratio_hl.chain || b._ratio_hl[RATIO_KEY]);
     function drawRatioChart(axis) {
       const canvas = $("ratioChart");
       const dpr = window.devicePixelRatio || 1;
@@ -1084,7 +1091,7 @@
         const close = variantRatio(variantOf(b, "close", RATIO_KEY));
         if (ts == null || close == null || ts < startTs) return null;
         const open = variantRatio(variantOf(b, "open", RATIO_KEY)) ?? close;
-        const hl = (b._ratio_hl && b._ratio_hl[RATIO_KEY]) || [Math.min(open, close), Math.max(open, close)];
+        const hl = ratioHLOf(b) || [Math.min(open, close), Math.max(open, close)];
         return {ts, open, close, high: Math.max(hl[1], open, close), low: Math.min(hl[0], open, close)};
       }).filter(Boolean);
       if (!bars.length) {
