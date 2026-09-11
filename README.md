@@ -52,6 +52,8 @@ Yahoo는 키가 없을 때만 쓰는 지연 시세입니다. 실시간이 아닙
 
 화면이 **tastytrade 연결 중**에서 멈추면, 예전 버전은 `/NQ`를 선물 계약처럼 조회해서 기초가격이 안 잡힌 채 DXLink만 기다리고 있었습니다. 지금은 최근월물(`/NQU6` 같은 심볼)을 찾고, REST 호가로 보드를 먼저 찍은 뒤 DXLink를 붙입니다. 배포 후 `/health`의 `phase`, `contracts`, `quoted`, `error`를 보면 됩니다.
 
+DXLink 웹소켓이 도중에 끊기면(예전에는 `DXLink: unhandled errors in a TaskGroup (1 sub-exception)`이 빨간 줄로 남고 그날 내내 REST 폴링에 머물렀습니다) 이제 보드는 REST 호가로 계속 찍히고, 5초 → 10초 → … → 최대 2분 간격으로 DXLink를 다시 붙입니다. 이 동안 상단 피드 알약이 `tastytrade 시세 n/m · DXLink 재연결 중`으로 바뀌고, 마우스를 올리면 실제 원인(예: `ConnectionClosedError`)과 재시도 횟수가 보입니다. `/api/status`의 `stream_error`·`stream_retries`, `phase: "rest"`도 같은 정보입니다. REST까지 6회 연속 실패하면 세션이 죽은 것으로 보고 다시 로그인합니다.
+
 ## Railway에 올리기
 
 가능합니다. 이 저장소를 Railway 서비스 하나에 붙이면 됩니다. 인스턴스는 **1개**만 쓰세요. 복제본을 늘리면 분봉을 두 번 찍고 화면이 갈라집니다.

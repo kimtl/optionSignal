@@ -133,6 +133,9 @@ class LiveHub:
         else:
             session = yahoo_session_status()
         feed_error = getattr(feed, "error", None) if feed else None
+        stream_error = getattr(feed, "stream_error", None) if feed else None
+        if ready and not realtime and stream_error:
+            session["label_ko"] = "tastytrade 시세 (REST · DXLink 재연결 대기)"
         return {
             "symbol": self.symbol,
             "max_dte": self.max_dte,
@@ -142,6 +145,8 @@ class LiveHub:
             "viewers": len(self.subscribers),
             "last_tick_at": self.last_tick_at.isoformat(timespec="seconds") if self.last_tick_at else None,
             "error": self.error or feed_error,
+            "stream_error": stream_error,
+            "stream_retries": int(getattr(feed, "stream_retries", 0) or 0) if feed else 0,
             "session": session,
             "source": source,
             "realtime": realtime,
