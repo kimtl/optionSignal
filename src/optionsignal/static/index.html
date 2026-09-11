@@ -763,6 +763,7 @@
       const sess = status.session || {};
       $("session").textContent = sess.label_ko || "세션";
       $("session").className = "pill" + (sess.live ? " live" : " hot");
+      $("feed").title = "";
       if (status.realtime) {
         $("feed").textContent = "tastytrade 실시간";
         $("feed").className = "pill live";
@@ -770,8 +771,12 @@
         $("feed").textContent = "tastytrade 실패";
         $("feed").className = "pill hot";
       } else if (status.source === "tastytrade" && (status.ready || status.contracts)) {
-        $("feed").textContent = `tastytrade 시세 ${status.quoted || 0}/${status.contracts || 0}`;
+        const rest = status.stream_error ? " · DXLink 재연결 중" : "";
+        $("feed").textContent = `tastytrade 시세 ${status.quoted || 0}/${status.contracts || 0}${rest}`;
         $("feed").className = "pill live";
+        if (status.stream_error) {
+          $("feed").title = `${status.stream_error} (재시도 ${status.stream_retries || 0}회) — REST 시세로 계속 표시 중`;
+        }
       } else if (status.source === "tastytrade") {
         $("feed").textContent = status.phase ? `tastytrade ${status.phase}` : "tastytrade 연결 중";
         $("feed").className = "pill hot";

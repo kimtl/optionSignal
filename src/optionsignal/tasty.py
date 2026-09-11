@@ -37,6 +37,41 @@ def yahoo_futures_symbol(symbol: str) -> str:
 MAX_STREAM_CONTRACTS = 500
 
 
+def describe_exception(exc: BaseException) -> str:
+    """Human-readable cause for a feed error.
+
+    DXLinkStreamer runs its reader/heartbeat coroutines in a TaskGroup, so a dropped
+    websocket surfaces as "unhandled errors in a TaskGroup (1 sub-exception)" which
+    hides the real reason. Unwrap the group down to its leaf exceptions.
+    """
+    leaves: list[BaseException] = []
+
+    def walk(err: BaseException) -> None:
+        if isinstance(err, BaseExceptionGroup):
+            for sub in err.exceptions:
+                walk(sub)
+        else:
+            leaves.append(err)
+
+    walk(exc)
+    parts: list[str] = []
+    for leaf in leaves:
+        text = str(leaf).strip()
+        name = type(leaf).__name__
+        parts.append(f"{name}: {text}" if text else name)
+    seen: list[str] = []
+    for part in parts:
+        if part not in seen:
+            seen.append(part)
+    return " / ".join(seen[:3]) or type(exc).__name__
+
+
+# Pause between DXLink reconnect attempts while the board keeps working on REST quotes.
+STREAM_RETRY_MIN = 5.0
+STREAM_RETRY_MAX = 120.0
+REST_FAILURES_BEFORE_RELOGIN = 6
+
+
 class FeedNotReady(RuntimeError):
     """DXLink is still connecting; the board should retry, not treat this as a dead proxy."""
 
@@ -230,6 +265,9 @@ class TastyFeed:
         self.ready = False
         self.streaming = False
         self.error: str | None = None
+        # Last DXLink failure while REST quotes keep flowing; informational, not a board error.
+        self.stream_error: str | None = None
+        self.stream_retries = 0
         self._running = False
         self._spot: float | None = None
         self._session = None
@@ -323,7 +361,7 @@ class TastyFeed:
                 if isinstance(exc, asyncio.CancelledError):
                     self._running = False
                     raise
-                self.error = f"{type(exc).__name__}: {exc}"
+                self.error = describe_exception(exc)
                 self.phase = "error"
                 self.streaming = False
                 log.exception("tastytrade feed error")
@@ -369,18 +407,58 @@ class TastyFeed:
                     self._spot,
                     self.future_symbol,
                 )
+            await self._stream_with_rest_fallback(session, DXLinkStreamer, Quote, Greeks, Trade)
+
+    async def _stream_with_rest_fallback(self, session, DXLinkStreamer, Quote, Greeks, Trade) -> None:
+        """Run DXLink; when it drops, poll REST quotes for a while and then reconnect.
+
+        A failed websocket used to park the feed on REST polling for the rest of the
+        session with a red "DXLink: unhandled errors in a TaskGroup" line. Now the
+        board keeps ticking on REST and DXLink is retried with growing pauses.
+        """
+        import asyncio
+
+        backoff = STREAM_RETRY_MIN
+        while self._running and not self.rolled_over():
             try:
                 await self._stream(session, DXLinkStreamer, Quote, Greeks, Trade)
+                return  # clean exit: stopped or rolled over
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if self.streaming:
+                    backoff = STREAM_RETRY_MIN  # it was live: a fresh drop, not a repeated refusal
                 self.streaming = False
-                self.error = f"DXLink: {exc}"
-                log.exception("DXLink failed; falling back to REST quotes")
-                while self._running and not self.rolled_over():
-                    await self._hydrate_quotes_rest(session)
-                    self.phase = "quotes"
-                    await asyncio.sleep(5)
+                self.stream_retries += 1
+                self.stream_error = f"DXLink: {describe_exception(exc)}"
+                if self.ready:
+                    # Quotes still arrive over REST; keep the board error clear.
+                    self.error = None
+                else:
+                    self.error = self.stream_error
+                log.warning(
+                    "DXLink failed (%s, attempt %s); REST quotes for %.0fs then reconnect",
+                    self.stream_error,
+                    self.stream_retries,
+                    backoff,
+                )
+            deadline = asyncio.get_event_loop().time() + backoff
+            rest_failures = 0
+            while self._running and not self.rolled_over():
+                if await self._hydrate_quotes_rest(session):
+                    rest_failures = 0
+                    if self.contracts and self._spot:
+                        self.ready = True
+                else:
+                    rest_failures += 1
+                    if rest_failures >= REST_FAILURES_BEFORE_RELOGIN:
+                        # Neither DXLink nor REST answers: the session itself is probably dead.
+                        raise RuntimeError(f"{self.stream_error}; REST 시세도 {rest_failures}회 연속 실패 — 재로그인")
+                self.phase = "rest"
+                if asyncio.get_event_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(min(5.0, max(0.0, deadline - asyncio.get_event_loop().time())))
+            backoff = min(backoff * 2, STREAM_RETRY_MAX)
 
     async def _stream(self, session, DXLinkStreamer, Quote, Greeks, Trade) -> None:
         import asyncio
@@ -398,6 +476,7 @@ class TastyFeed:
             self.phase = "live"
             self.streaming = True
             self.error = None
+            self.stream_error = None
             while self._running:
                 if self.rolled_over():
                     return
@@ -545,7 +624,7 @@ class TastyFeed:
         self._spot = spot
         self.expiry = min(c.expiry for c in self.contracts)
 
-    async def _hydrate_quotes_rest(self, session) -> None:
+    async def _hydrate_quotes_rest(self, session) -> bool:
         from tastytrade.market_data import get_market_data_by_type
 
         try:
@@ -581,7 +660,9 @@ class TastyFeed:
                     if oi is not None and oi > 0:
                         contract.open_interest = int(oi)
         except Exception as exc:  # noqa: BLE001
-            log.warning("REST quotes failed: %s", exc)
+            log.warning("REST quotes failed: %s", describe_exception(exc))
+            return False
+        return True
 
 
 async def _front_future(Future, session, root: str):

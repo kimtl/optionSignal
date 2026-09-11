@@ -404,3 +404,110 @@ def test_ensure_feed_swaps_tasty_feed_when_symbol_changes(monkeypatch, tmp_path)
 
     asyncio.run(scenario())
     assert len(created) == 2
+
+
+def test_describe_exception_unwraps_task_group():
+    from optionsignal.tasty import describe_exception
+
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [ConnectionResetError("websocket closed"), ExceptionGroup("inner", [TimeoutError()])],
+    )
+    text = describe_exception(group)
+    assert "TaskGroup" not in text
+    assert text == "ConnectionResetError: websocket closed / TimeoutError"
+    assert describe_exception(ValueError("bad")) == "ValueError: bad"
+
+
+def test_stream_failure_polls_rest_then_reconnects_without_board_error(monkeypatch):
+    import asyncio
+
+    import optionsignal.tasty as tasty
+
+    monkeypatch.setattr(tasty, "STREAM_RETRY_MIN", 0.01)
+    monkeypatch.setattr(tasty, "STREAM_RETRY_MAX", 0.02)
+    feed = TastyFeed(symbol="/NQ", max_dte=0, band=0.08)
+    feed.contracts = [LiveContract(date(2030, 1, 1), "call", 20000.0, "./NQ1C20000", 0, "occ")]
+    feed._spot = 20000.0
+    feed.ready = True
+    feed._running = True
+    calls = {"stream": 0, "rest": 0}
+
+    async def failing_stream(*_args):
+        calls["stream"] += 1
+        if calls["stream"] == 1:
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [ConnectionResetError("ws dropped")])
+        # second attempt "connects" and then the feed is stopped
+        feed.streaming = True
+        feed.stream_error = None
+        feed._running = False
+
+    async def rest(_session):
+        calls["rest"] += 1
+        return True
+
+    monkeypatch.setattr(feed, "_stream", failing_stream)
+    monkeypatch.setattr(feed, "_hydrate_quotes_rest", rest)
+
+    asyncio.run(feed._stream_with_rest_fallback(object(), None, None, None, None))
+
+    assert calls["stream"] == 2
+    assert calls["rest"] >= 1
+    assert feed.error is None  # REST kept the board alive: no red line
+    assert feed.stream_retries == 1
+    assert feed.streaming is True and feed.stream_error is None
+
+
+def test_stream_failure_with_dead_rest_forces_relogin(monkeypatch):
+    import asyncio
+
+    import optionsignal.tasty as tasty
+
+    monkeypatch.setattr(tasty, "STREAM_RETRY_MIN", 60.0)
+    monkeypatch.setattr(tasty, "REST_FAILURES_BEFORE_RELOGIN", 2)
+    feed = TastyFeed(symbol="/NQ", max_dte=0, band=0.08)
+    feed.contracts = [LiveContract(date(2030, 1, 1), "call", 20000.0, "./NQ1C20000", 0, "occ")]
+    feed._spot = 20000.0
+    feed.ready = True
+    feed._running = True
+
+    async def failing_stream(*_args):
+        raise RuntimeError("no dxlink")
+
+    async def dead_rest(_session):
+        return False
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(feed, "_stream", failing_stream)
+    monkeypatch.setattr(feed, "_hydrate_quotes_rest", dead_rest)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)  # tasty imports asyncio lazily: same module object
+
+    with pytest.raises(RuntimeError, match="재로그인"):
+        asyncio.run(feed._stream_with_rest_fallback(object(), None, None, None, None))
+    assert feed.stream_error == "DXLink: RuntimeError: no dxlink"
+
+
+def test_status_shows_rest_fallback_when_stream_dropped(monkeypatch, tmp_path):
+    monkeypatch.setattr("optionsignal.store.DEFAULT_DB", tmp_path / "sig.db")
+
+    class Feed:
+        ready = True
+        streaming = False
+        error = None
+        stream_error = "DXLink: ConnectionResetError: ws dropped"
+        stream_retries = 2
+        phase = "rest"
+        contracts = [object()]
+        quoted_count = 1
+
+        def stop(self):
+            return None
+
+    hub = LiveHub(symbol="/ES", interval=5, tasty_feed=Feed())
+    status = hub.status()
+    assert status["error"] is None
+    assert status["stream_error"] == Feed.stream_error
+    assert status["stream_retries"] == 2
+    assert "DXLink 재연결" in status["session"]["label_ko"]
